@@ -605,7 +605,19 @@ class MainWindow(QMainWindow):
         self._closing = True
         try:
             self._proc_thread.quit()
-            self._proc_thread.wait()
+            # Espera o término REAL (nunca `terminate()` de cara: abortar
+            # a QThread no meio do slot corrompe o encerramento — o teste
+            # de shutdown exige ~3s de espera numa tarefa longa). Mas com
+            # teto de 30s: antes era para sempre (imagem gigante = janela
+            # pendurada). Passou do teto, termina à força; callbacks
+            # tardios já são descartados via `_closing`.
+            if not self._proc_thread.wait(30000):
+                self._log0("Processamento travado há 30s: forçando parada.")
+                try:
+                    self._proc_thread.terminate()
+                    self._proc_thread.wait(3000)
+                except Exception:
+                    pass
         except Exception:
             pass
         super().closeEvent(e)

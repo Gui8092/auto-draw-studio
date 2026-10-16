@@ -113,8 +113,10 @@ def trace_skeleton(skel: np.ndarray, prune_len: int = 3) -> list[list[tuple[int,
             cy, cx = nxt
             path.append((cx, cy))
             used[cy, cx] = True
-            if degree[cy, cx] > 2:
-                break  # para nas junções; outro ramo continua depois
+            # Sem parada em junção: atravessa reto. Antes, cada braço
+            # virava um traço (1 lift por braço); agora a cruz vira ~3
+            # traços em vez de 4, o T vira 2 em vez de 3. Cada pixel
+            # continua em no máximo uma polilinha (flag `used`).
         return path
 
     # Começa pelas pontas (grau 1), depois junções, depois resto.
