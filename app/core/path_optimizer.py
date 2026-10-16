@@ -106,27 +106,29 @@ def order_plan(plan: DrawingPlan) -> DrawingPlan:
     ordered: list[Stroke] = []
     for key in sorted(grouped):
         group = grouped[key]
-        # Guloso a partir do primeiro
-        remaining = group[:]
-        current = _stroke_start(remaining.pop(0))
+        # Guloso a partir do primeiro — com distâncias vetorizadas em
+        # NumPy (antes: loop Python O(n²) que congelava em imagens com
+        # milhares de traços). Critério idêntico: menor distância
+        # quadrada, desempate pelo primeiro, `d0 <= d1` sem inverter.
+        s_arr = np.array([_stroke_start(s) for s in group], dtype=np.float64)
+        e_arr = np.array([_stroke_end(s) for s in group], dtype=np.float64)
+        alive = np.ones(len(group), dtype=bool)
+        alive[0] = False
         ordered.append(group[0])
-        while remaining:
-            best_i, best_d, best_rev = 0, float("inf"), False
-            for i, s in enumerate(remaining):
-                p0 = _stroke_start(s)
-                d0 = (p0[0] - current[0]) ** 2 + (p0[1] - current[1]) ** 2
-                p1 = _stroke_end(s)
-                d1 = (p1[0] - current[0]) ** 2 + (p1[1] - current[1]) ** 2
-                if d0 <= d1:
-                    d, rev = d0, False
-                else:
-                    d, rev = d1, True
-                if d < best_d:
-                    best_d, best_i, best_rev = d, i, rev
-            nxt = remaining.pop(best_i)
-            if best_rev and len(nxt.points) >= 2:
+        cur = s_arr[0]
+        while alive.any():
+            d0 = ((s_arr - cur) ** 2).sum(axis=1)
+            d1 = ((e_arr - cur) ** 2).sum(axis=1)
+            d0[~alive] = float("inf")
+            d1[~alive] = float("inf")
+            best = np.minimum(d0, d1)
+            i = int(np.argmin(best))
+            rev = bool(d1[i] < d0[i])
+            nxt = group[i]
+            alive[i] = False
+            if rev and len(nxt.points) >= 2:
                 nxt.points = nxt.points[::-1]
             ordered.append(nxt)
-            current = nxt.points[-1]
+            cur = np.array(nxt.points[-1], dtype=np.float64)
     plan.strokes = ordered
     return plan

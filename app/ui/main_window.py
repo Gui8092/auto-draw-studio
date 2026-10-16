@@ -34,6 +34,14 @@ from app.utils.persistence import load_settings, save_settings
 log = setup_logging()
 
 
+def clamp_countdown(seconds: int | float) -> int:
+    """Contagem regressiva válida em 1..30s (campo antes ignorado)."""
+    try:
+        return max(1, min(30, int(seconds)))
+    except (TypeError, ValueError):
+        return 5
+
+
 def app_icon() -> QIcon:
     """Ícone do app (funciona em dev e no bundle PyInstaller)."""
     import sys
@@ -90,8 +98,10 @@ class MainWindow(QMainWindow):
         self.signals.process.connect(self._worker.request)
         self._worker.done.connect(self._on_processed)
         self._worker.failed.connect(self._on_process_failed)
+        self._worker.progress_ms.connect(self._on_proc_time)
         self._proc_thread.start()
         self._exec_t0: float | None = None
+        self._last_prog_t: float = 0.0
 
         try:
             backend = PyAutoGuiBackend()
@@ -105,6 +115,10 @@ class MainWindow(QMainWindow):
             on_progress=lambda d, t: self.signals.progress.emit(d, t),
             on_message=lambda m: self.signals.message.emit(m),
         )
+        # countdown_s do settings agora vale de verdade (antes: o campo
+        # existia mas o controller usava 5 fixos).
+        self.controller.countdown_seconds = clamp_countdown(
+            self.settings.execution.countdown_s)
         self.hotkeys = GlobalHotkeys(
             on_start=self.ui_start, on_pause=self.controller.pause,
             on_resume=self.controller.resume, on_cancel=self.controller.cancel,
@@ -284,7 +298,9 @@ class MainWindow(QMainWindow):
         row3 = QHBoxLayout()
         self.btn_start = QPushButton("▶ Iniciar (F9)")
         self.btn_start.setObjectName("primary")
-        self.btn_start.setToolTip("Começa após 5 s de contagem regressiva (F9).")
+        self.btn_start.setToolTip(
+            f"Começa após {self.controller.countdown_seconds} s de "
+            "contagem regressiva (F9).")
         self.btn_start.clicked.connect(self.ui_start)
         self.btn_pause = QPushButton("⏸ Pausar")
         self.btn_pause.setToolTip("Pausa contagem ou desenho (F10).")
@@ -481,11 +497,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Não pronto", msg)
             self._log(f"⛔ {msg}")
             return
-        assert self.plan is not None and self.area is not None
+        if self.plan is None or self.area is None:
+            QMessageBox.warning(self, "Não pronto", "Plano ou área ausente.")
+            return
         mapper = CoordinateMapper(self.plan.image_width, self.plan.image_height, self.area)
         self.minimize_for_draw()
-        self.controller.start(self.plan, mapper, stroke_delay=self.spin_delay.value(),
-                                move_speed_px_s=self.spin_speed.value())
+        started = self.controller.start(
+            self.plan, mapper, stroke_delay=self.spin_delay.value(),
+            move_speed_px_s=self.spin_speed.value())
+        if not started:
+            # start() recusou (execução em andamento): desfaz o minimize
+            # em vez de largar o usuário sem janela e sem aviso.
+            self._auto_minimized = False
+            try:
+                self.showNormal()
+            except Exception:
+                pass
+            self._log("⛔ Já há um desenho em andamento.")
+            self._refresh_ready()
 
     def minimize_for_draw(self):
         try:
@@ -499,7 +528,7 @@ class MainWindow(QMainWindow):
         self.settings.execution.move_speed_px_s = float(self.spin_speed.value())
         self.settings.execution.stroke_delay_s = float(self.spin_delay.value())
         save_settings(self.settings)
-        self._log("Configurações salvas em settings.json")
+        self._log("Configurações salvas.")
 
     # ---- Slots de execução ----
     def _on_state(self, s: str):
@@ -519,9 +548,24 @@ class MainWindow(QMainWindow):
                     pass
         self._refresh_ready()
 
+    def _on_proc_time(self, gen: int, ms: float):
+        if self._closing or gen != self._proc_gen:
+            return
+        try:
+            self.statusBar().showMessage(f"Processado em {ms:.0f} ms")
+        except Exception:
+            pass
+
     def _on_progress(self, done: int, total: int):
         self.progress.setMaximum(max(1, total))
         self.progress.setValue(done)
+        # Throttle do rótulo: sinal chega 1× por traço (centenas/s) e
+        # setText a cada evento inundava a UI. Barra atualiza sempre;
+        # texto, no máximo a 10 Hz (+ primeiro e último).
+        now = time.perf_counter()
+        if not (done >= total or done <= 1 or now - self._last_prog_t >= 0.1):
+            return
+        self._last_prog_t = now
         if self._exec_t0 is not None and done > 0 and total > 0:
             el = time.perf_counter() - self._exec_t0
             # Estimativa restante honesta: ritmo medido, não velocidade nominal.

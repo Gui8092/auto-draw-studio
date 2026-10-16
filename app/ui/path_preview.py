@@ -33,6 +33,10 @@ class PathPreview(QWidget):
         self._zoom = 1.0
         self._pan = [0.0, 0.0]
         self._drag: list | None = None
+        # Cache por traço: (kind, minx, miny, maxx, maxy). Evita recalcular
+        # bbox a cada repaint e permite pular traços fora da viewport
+        # (culling) em vez de redesenhar milhares de segmentos no pan/zoom.
+        self._cache: list = []
         self.setMinimumSize(200, 200)
         self.setStyleSheet("background:#101013; border-radius:8px;")
 
@@ -40,6 +44,14 @@ class PathPreview(QWidget):
         self.plan = plan
         self._zoom = 1.0
         self._pan = [0.0, 0.0]
+        self._cache = []
+        for s in (plan.strokes if plan is not None else []):
+            if len(s.points) >= 2:
+                xs = [p[0] for p in s.points]
+                ys = [p[1] for p in s.points]
+                self._cache.append((s.kind, min(xs), min(ys), max(xs), max(ys)))
+            else:
+                self._cache.append((s.kind, 0.0, 0.0, -1.0, -1.0))
         self.update()
 
     def set_kind_visible(self, kind: StrokeType, on: bool):
@@ -103,6 +115,10 @@ class PathPreview(QWidget):
 
     def _view(self):
         """(escala, ox, oy): ajuste à tela × zoom, com pan em px de tela."""
+        if (not self.plan or self.plan.image_width <= 0
+                or self.plan.image_height <= 0
+                or self.width() <= 0 or self.height() <= 0):
+            return 1.0, 0.0, 0.0
         base = min(self.width() / self.plan.image_width,
                    self.height() / self.plan.image_height)
         s = base * self._zoom
@@ -110,19 +126,39 @@ class PathPreview(QWidget):
         cy = self.height() / 2 + self._pan[1]
         return s, cx - (self.plan.image_width * s) / 2, cy - (self.plan.image_height * s) / 2
 
+    def _visible_content_rect(self, s, ox, oy):
+        """Retângulo de conteúdo (coords da imagem) visível no widget."""
+        if s <= 0:
+            return None
+        x0 = (0 - ox) / s
+        y0 = (0 - oy) / s
+        x1 = (self.width() - ox) / s
+        y1 = (self.height() - oy) / s
+        return (x0, y0, x1, y1)
+
     def paintEvent(self, e):
         super().paintEvent(e)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor("#101013"))
-        if not self.plan or not self.plan.strokes or self.plan.image_width <= 0:
+        if (not self.plan or not self.plan.strokes
+                or self.plan.image_width <= 0 or self.plan.image_height <= 0):
             p.setPen(QColor("#71717a"))
             p.drawText(self.rect(), Qt.AlignCenter, "Sem trajetórias")
             return
         s, ox, oy = self._view()
-        for stroke in self.plan.strokes:
+        if s <= 0:
+            return
+        view = self._visible_content_rect(s, ox, oy)
+        for idx, stroke in enumerate(self.plan.strokes):
             if len(stroke.points) < 2 or not self.visible.get(stroke.kind, True):
                 continue
+            # Culling: pula traços com bbox fora da viewport.
+            if view is not None and idx < len(self._cache):
+                _, bx0, by0, bx1, by1 = self._cache[idx]
+                vx0, vy0, vx1, vy1 = view
+                if bx1 < vx0 or bx0 > vx1 or by1 < vy0 or by0 > vy1:
+                    continue
             color, w, style, _ = STYLE.get(stroke.kind, (QColor("#e4e4e7"), 1.0, Qt.SolidLine, ""))
             pen = QPen(color, w, style, Qt.RoundCap, Qt.RoundJoin)
             p.setPen(pen)

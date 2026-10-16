@@ -42,10 +42,16 @@ class Stroke:
 
     @staticmethod
     def from_dict(data: dict) -> "Stroke":
-        return Stroke(
-            points=[(float(x), float(y)) for x, y in data["points"]],
-            kind=StrokeType(data.get("kind", "fill")),
-        )
+        pts = data.get("points", []) if isinstance(data, dict) else []
+        try:
+            points = [(float(x), float(y)) for x, y in (pts or [])]
+        except (TypeError, ValueError):
+            points = []
+        try:
+            kind = StrokeType(data.get("kind", "fill"))
+        except (ValueError, AttributeError):
+            kind = StrokeType.FILL
+        return Stroke(points=points, kind=kind)
 
 
 @dataclass
@@ -78,8 +84,10 @@ class DrawingPlan:
 
         Soma o percurso com o botão pressionado E os reposicionamentos com
         o botão liberado, mais um atraso por traço (levantar/pressionar).
-        Segmentos cujo tempo ficaria <= `PYAUTOGUI_MINIMUM_DURATION`
-        custam ~0: o PyAutoGUI os move instantaneamente, sem tween.
+        Cada deslocamento (pen-down ou pen-up) cujo tempo ficaria <=
+        `PYAUTOGUI_MINIMUM_DURATION` custa ~0: o PyAutoGUI o move
+        instantaneamente, sem tween — igual ao executor real, que dá
+        `duration` proporcional também ao travel pen-up.
         """
         import math
 
@@ -98,7 +106,11 @@ class DrawingPlan:
                     down += seg
             if pts:
                 if prev_end is not None:
-                    up += math.hypot(pts[0][0] - prev_end[0], pts[0][1] - prev_end[1])
+                    jump = math.hypot(pts[0][0] - prev_end[0], pts[0][1] - prev_end[1])
+                    # Travel pen-up é um único moveTo no executor: abaixo do
+                    # piso, é instantâneo e custa ~0 (mesma regra do pen-down).
+                    if jump / travel > PYAUTOGUI_MINIMUM_DURATION:
+                        up += jump
                 prev_end = pts[-1]
         return (down / move_speed_px_s + up / travel
                 + len(self.strokes) * max(0.0, stroke_delay_s))
@@ -113,8 +125,11 @@ class DrawingPlan:
 
     @staticmethod
     def from_dict(data: dict) -> "DrawingPlan":
+        data = data if isinstance(data, dict) else {}
+        strokes = data.get("strokes", []) or []
         return DrawingPlan(
-            strokes=[Stroke.from_dict(s) for s in data.get("strokes", [])],
+            strokes=[Stroke.from_dict(s) for s in strokes
+                     if isinstance(s, dict)],
             image_width=int(data.get("image_width", 0)),
             image_height=int(data.get("image_height", 0)),
             spacing_px=float(data.get("spacing_px", 4.0)),

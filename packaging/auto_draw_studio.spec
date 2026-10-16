@@ -28,7 +28,7 @@ except ImportError:
     pass
 
 a = Analysis(
-    ["..\\main.py"],
+    ["../main.py"],
     pathex=[os.path.abspath("..")],
     binaries=binaries,
     datas=datas,
@@ -50,7 +50,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon="..\\assets\\icon.ico",
+    icon="../assets/icon.ico",
 )
 coll = COLLECT(
     exe,

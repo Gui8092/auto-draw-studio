@@ -13,15 +13,21 @@ from __future__ import annotations
 import numpy as np
 
 
-def skeletonize(ink: np.ndarray, max_iter: int = 100) -> np.ndarray:
+def skeletonize(ink: np.ndarray, max_iter: int | None = None) -> np.ndarray:
     """Esqueleto morfológico (Zhang-Suen) de máscara binária 0/1.
 
     Preserva topologia; retorna uint8 0/1 com linhas de 1px.
+    `max_iter=None` (padrão) dimensiona sozinho: afinar uma região de
+    largura W precisa de ~W/2 passos — o fixo 100 deixava regiões largas
+    (>200px) com milhares de px não afinados.
     """
     img = (ink > 0).astype(np.uint8)
     if img.sum() == 0:
         return img
-    for _ in range(max_iter):
+    if max_iter is None:
+        h, w = img.shape[:2]
+        max_iter = min(400, max(h, w) // 2 + 20)
+    for _ in range(max(1, int(max_iter))):
         # Sequencial (não paralelo): a sub-iteração 2 opera sobre o
         # resultado da 1, senão as duas fileiras centrais de regiões com
         # largura par se apagam mutuamente no mesmo passo.

@@ -61,8 +61,19 @@ class CanvasSelector(QWidget):
         self._finished = False
 
     def start(self):
-        geo = QApplication.primaryScreen().virtualGeometry()
-        self.setGeometry(geo)
+        # União de TODOS os monitores (antes: só a geometria da tela
+        # primária — em multi-monitor o overlay não cobria o 2º monitor
+        # e a área de lá era inselecionável).
+        rect = None
+        try:
+            for scr in QApplication.screens():
+                g = scr.geometry()
+                rect = g if rect is None else rect.united(g)
+        except Exception:
+            rect = None
+        if rect is None:
+            rect = QApplication.primaryScreen().virtualGeometry()
+        self.setGeometry(rect)
         self._p0 = self._p1 = None
         self.selected = None
         self._finished = False

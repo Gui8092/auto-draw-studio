@@ -62,11 +62,19 @@ def classify_components(mask: np.ndarray, thin_px: float = 4.0,
         ys, xs = np.nonzero(hlabels == i)
         if len(xs) == 0:
             continue
-        # A qual componente de tinta este furo pertence? Olha a vizinhança.
+        # A qual componente de tinta este furo pertence? Olha a vizinhança
+        # nos 4 sentidos (antes: só o pixel de baixo — furo encostado só
+        # na lateral nunca era atribuído e `has_hole` vinha False).
         yy = np.clip(ys, 0, h - 1)
         xx = np.clip(xs, 0, w - 1)
-        adj = labels[np.clip(yy + 1, 0, h - 1), xx]
-        adj = adj[adj > 0]
+        cands = [
+            labels[np.clip(yy + 1, 0, h - 1), xx],
+            labels[np.clip(yy - 1, 0, h - 1), xx],
+            labels[yy, np.clip(xx + 1, 0, w - 1)],
+            labels[yy, np.clip(xx - 1, 0, w - 1)],
+        ]
+        adj = np.concatenate([c[c > 0] for c in cands if (c > 0).any()]
+                             or [np.empty(0, dtype=int)])
         if len(adj):
             hole_map[int(np.bincount(adj).argmax())] = True
     dec = StrategyDecision()

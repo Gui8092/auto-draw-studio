@@ -8,12 +8,19 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 
 
 def numpy_to_pixmap(arr: np.ndarray) -> QPixmap:
-    if arr.ndim == 2:
-        h, w = arr.shape
-        qimg = QImage(arr.data, w, h, w, QImage.Format_Grayscale8).copy()
+    # Garante buffer C-contíguo: views com stride (ex.: arr[:, ::2])
+    # estouravam BufferError no QImage do caminho grayscale.
+    a = np.ascontiguousarray(arr)
+    if a.ndim == 2:
+        if a.dtype != np.uint8:
+            a = np.ascontiguousarray(a.astype(np.uint8))
+        h, w = a.shape
+        qimg = QImage(a.data, w, h, w, QImage.Format_Grayscale8).copy()
     else:
-        h, w, _ = arr.shape
-        data = np.ascontiguousarray(arr)
+        h, w, _ = a.shape
+        if a.dtype != np.uint8:
+            a = np.ascontiguousarray(a.astype(np.uint8))
+        data = np.ascontiguousarray(a)
         qimg = QImage(data.data, w, h, 3 * w, QImage.Format_RGB888).copy()
     return QPixmap.fromImage(qimg)
 
@@ -69,7 +76,7 @@ class ImagePreview(QWidget):
         if t.width() <= 0 or b.width() <= 0:
             return
         s = min(t.width() / b.width(), t.height() / b.height())
-        self._zoom = max(0.05, min(s, 4.0))
+        self._zoom = max(0.05, min(s, 8.0))
         self._apply()
 
     def zoom_in(self):

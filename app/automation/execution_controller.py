@@ -47,6 +47,9 @@ class ExecutionController:
         self.total_count = 0
         # De onde a pausa partiu (COUNTDOWN ou RUNNING); usado pelo resume().
         self._paused_from: ExecState | None = None
+        # Duração da contagem regressiva (s). Padrão = classe (5); a UI
+        # sobrescreve com o countdown_s das configurações salvas.
+        self.countdown_seconds: int = int(self.COUNTDOWN_SECONDS)
 
     def _set(self, s: ExecState, msg: str = ""):
         with self._lock:
@@ -86,12 +89,33 @@ class ExecutionController:
         self._thread.start()
         return True
 
+    def _rest(self, seconds: float) -> bool:
+        """Descansa de forma interrompível (pausa congela, cancel aborta).
+
+        Retorna False se cancelado no meio (o chamador encerra como
+        CANCELLED em vez de cair no próximo estado/encerrar como concluído).
+        """
+        if seconds <= 0:
+            return not self._cancel.is_set()
+        remaining = float(seconds)
+        while remaining > 0:
+            if self._cancel.is_set():
+                return False
+            self._pause.wait()  # congela aqui enquanto pausado
+            if self._cancel.is_set():
+                return False
+            chunk = min(0.05, remaining)
+            self._sleep(chunk)
+            remaining -= chunk
+        return not self._cancel.is_set()
+
     def _run(self, plan, mapper, stroke_delay):
         try:
-            self._set(ExecState.COUNTDOWN, "Contagem regressiva: 5 s…")
+            total_wait = max(1, int(self.countdown_seconds))
+            self._set(ExecState.COUNTDOWN, f"Contagem regressiva: {total_wait} s…")
             # Contagem em ticks curtos para que pause/cancel respondam
             # durante o countdown (pausa congela via _pause.wait()).
-            for i in range(self.COUNTDOWN_SECONDS, 0, -1):
+            for i in range(total_wait, 0, -1):
                 if self._cancel.is_set():
                     self._set(ExecState.CANCELLED, "Cancelado na contagem regressiva.")
                     return
@@ -131,18 +155,25 @@ class ExecutionController:
                     self._set(ExecState.CANCELLED, "Execução cancelada.")
                     return
                 if stroke_delay > 0:
-                    self._sleep(stroke_delay)
+                    if not self._rest(stroke_delay):
+                        self._set(ExecState.CANCELLED, "Execução cancelada.")
+                        return
             self._set(ExecState.COMPLETED, "Desenho concluído.")
         except Exception as e:
             self._set(ExecState.ERROR, f"Erro na execução: {e}")
 
     def pause(self) -> bool:
-        """Pausa a contagem regressiva ou o desenho. Retorna se pausou."""
+        """Pausa a contagem regressiva ou o desenho. Retorna se pausou.
+
+        Não solta o botão do mouse: o executor congela entre segmentos
+        com o botão pressionado, então o traço continua íntegro ao
+        retomar (antes, o mouseUp aqui furava o traço em andamento).
+        """
         if self.state in (ExecState.RUNNING, ExecState.COUNTDOWN):
             self._paused_from = self.state
             self._pause.clear()
             try:
-                self.executor.backend.mouseUp(button="left")
+                self.executor.pause_drawing()
             except Exception:
                 pass
             self._set(ExecState.PAUSED, "Pausado.")
@@ -155,6 +186,10 @@ class ExecutionController:
             origin = self._paused_from or ExecState.RUNNING
             self._paused_from = None
             self._pause.set()
+            try:
+                self.executor.resume_drawing()
+            except Exception:
+                pass
             self._set(origin, "Retomado.")
             return True
         return False
@@ -163,6 +198,10 @@ class ExecutionController:
         if self.is_busy:
             self._cancel.set()
             self._pause.set()
+            try:
+                self.executor.resume_drawing()  # desbloqueia wait de pausa
+            except Exception:
+                pass
             self.executor.cancel()
             try:
                 self.executor.backend.mouseUp(button="left")
