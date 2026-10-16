@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+logs/
+*.log
+# --- só local, não vai para o GitHub ---
+tests/
+benchmarks/out/
+settings.json
+prompt_projeto.md

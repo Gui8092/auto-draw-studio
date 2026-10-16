@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-draw-studio"
+version = "1.0.0"
+description = "Converte imagens em desenhos e reproduz automaticamente com o mouse"
+requires-python = ">=3.10"
+dependencies = [
+  "opencv-python>=4.8",
+  "numpy>=1.24",
+  "Pillow>=10.0",
+  "PySide6>=6.6",
+  "PyAutoGUI>=0.9.54",
+  "pynput>=1.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
