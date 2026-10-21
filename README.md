@@ -93,6 +93,23 @@ Nenhum teste move o mouse real (backend mock). O `baseline_quality.json`
 trava as métricas de qualidade por caso: se um ajuste de algoritmo piorar o
 desenho (cobertura, furos, deslocamento), o teste falha.
 
+O CI (`.github/workflows/tests.yml`) roda a suíte em **Windows e Linux**
+(Python 3.11–3.13) e gera o build empacotado como artefato.
+
+## Empacotamento Windows
+
+```powershell
+pip install pyinstaller
+pyinstaller packaging/auto_draw_studio.spec   # pasta (validar primeiro)
+# depois, se ok:
+pyinstaller --windowed --onefile --name AutoDrawStudio --icon assets/icon.ico --add-data "assets;assets" main.py
+```
+
+O `.spec` resolve os caminhos pela raiz do projeto, então roda de qualquer
+pasta. Valide o `.exe` abrindo sem console e rodando o fluxo completo. Se
+faltar o plugin de plataforma Qt ("windows"), confira o `collect_all('PySide6')`
+no `.spec`.
+
 ## Atalhos
 
 | Ação | Padrão |

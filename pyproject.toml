@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-draw-studio"
-version = "1.0.0"
+version = "1.1.0"
 description = "Converte imagens em desenhos e reproduz automaticamente com o mouse"
 requires-python = ">=3.10"
 dependencies = [

@@ -5,12 +5,24 @@ Depois de validar a pasta, gerar onefile:
     --add-data "assets;assets" main.py
 Armadilha clássica: plugin de plataforma Qt ("windows") ausente — o
 collect_all('PySide6') abaixo + teste do .exe resolvem.
+
+Os caminhos são resolvidos a partir da RAIZ do projeto (SPECPATH é
+injetado pelo PyInstaller), então o build funciona de qualquer pasta.
+Antes era impossível: `["../main.py"]` exigia rodar de dentro de
+`packaging/`, mas `datas = [("assets", "assets")]` exigia a raiz — o
+build saía sem os assets (ícone) ou apontava para o arquivo errado.
 """
 import os
 
 block_cipher = None
 
-datas = [("assets", "assets")]
+try:
+    SPEC_DIR = os.path.abspath(SPECPATH)      # injetado pelo PyInstaller
+except NameError:                              # execução como script comum
+    SPEC_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SPEC_DIR)
+
+datas = [(os.path.join(ROOT, "assets"), "assets")]
 binaries = []
 hiddenimports = []
 
@@ -28,8 +40,8 @@ except ImportError:
     pass
 
 a = Analysis(
-    ["../main.py"],
-    pathex=[os.path.abspath("..")],
+    [os.path.join(ROOT, "main.py")],
+    pathex=[ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -50,7 +62,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon="../assets/icon.ico",
+    icon=os.path.join(ROOT, "assets", "icon.ico"),
 )
 coll = COLLECT(
     exe,

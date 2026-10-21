@@ -11,8 +11,8 @@ $env:PYTHONPATH='C:\Users\User\Documents\.projetos\AUTO_DRAW_STUDIO'; $env:QT_QP
 # App
 python main.py
 
-# Build PyInstaller (Windows)
-cd packaging && pyinstaller auto_draw_studio.spec
+# Build PyInstaller (Windows) — funciona de qualquer pasta
+pyinstaller packaging/auto_draw_studio.spec
 ```
 
 ## Architecture (4 camadas)
@@ -60,7 +60,8 @@ main.py → app/ui/main_window.py           # UI + orquestração
   (`dist.max()` é fooled por um ponto grosso); esqueleto só na zona de decisão
 - `thin_line_px` decide linha×sólido — **não** depende de `fill_spacing`
 - Settings/logs salvos em `~/.auto_draw_studio` (não CWD); migra `settings.json` legado
-- `opencv-python-headless` nas deps (sem GUI); build spec usa caminhos `../` (Linux/Mac compatíveis)
+- `opencv-python-headless` nas deps (sem GUI); o spec resolve os caminhos
+  pela RAIZ do projeto (SPECPATH), então roda de qualquer pasta
 - `make_icon.py` tem `main()` guardado — import não reescreve ícones
 - Order plan vetorizado (NumPy) — 600 traços em ~0.06s; guloso parte do **fim**
   do 1º traço
