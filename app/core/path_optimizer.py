@@ -12,23 +12,38 @@ from app.models.drawing_plan import DrawingPlan, Stroke, StrokeType
 def simplify_polyline(points: list[tuple[float, float]], epsilon: float) -> list[tuple[float, float]]:
     if len(points) <= 2 or epsilon <= 0:
         return list(points)
+    # O OpenCV NUNCA devolve o vértice de fechamento: `approxPolyDP`
+    # conecta o primeiro e o último, mas não reinsere o ponto duplicado.
+    # Sem restaurá-lo, todo contorno (fechado por `contours_to_polylines`)
+    # perdia um lado inteiro — um quadrado ficava com 3 lados e um
+    # círculo com uma fresta de ~6px.
+    closed = points[0] == points[-1]
     arr = np.array(points, dtype=np.float32).reshape(-1, 1, 2)
-    approx = cv2.approxPolyDP(arr, float(epsilon), False)
+    approx = cv2.approxPolyDP(arr, float(epsilon), closed)
     out = [(float(p[0][0]), float(p[0][1])) for p in approx]
     # Segmentos de fill (2 pontos) nunca devem colapsar para 1 ponto
     if len(out) < 2 and len(points) >= 2:
         return [points[0], points[-1]]
+    if closed and len(out) >= 2 and out[0] != out[-1]:
+        out.append(out[0])
     return out
 
 
 def simplify_plan(plan: DrawingPlan, epsilon: float) -> DrawingPlan:
     if epsilon <= 0:
         return plan
+    # Traços de FILL são chains de scanlines horizontais alternadas.
+    # Com epsilon grande (o slider vai até 5.0) a simplificação
+    # colapsava o zigue-zague e as linhas horizontais viravam
+    # diagonais. Limita o epsilon do fill ao meio do espaçamento.
+    fill_eps = min(float(epsilon),
+                   max(0.5, float(plan.spacing_px) / 2.0 - 0.5))
     for s in plan.strokes:
         # Não simplifica fills retos de 2 pontos nem pontos de stipple
         if s.kind in (StrokeType.FILL, StrokeType.STIPPLE) and len(s.points) <= 2:
             continue
-        s.points = simplify_polyline(s.points, epsilon)
+        s.points = simplify_polyline(
+            s.points, fill_eps if s.kind == StrokeType.FILL else epsilon)
     plan.strokes = [s for s in plan.strokes if len(s.points) >= 2]
     return plan
 
@@ -115,7 +130,10 @@ def order_plan(plan: DrawingPlan) -> DrawingPlan:
         alive = np.ones(len(group), dtype=bool)
         alive[0] = False
         ordered.append(group[0])
-        cur = s_arr[0]
+        # Depois de desenhar o 1º traço o cursor está no FIM dele, não no
+        # início: partir do início fazia a primeira escolha do guloso
+        # sair do ponto errado (pen-up ~2x maior).
+        cur = e_arr[0]
         while alive.any():
             d0 = ((s_arr - cur) ** 2).sum(axis=1)
             d1 = ((e_arr - cur) ** 2).sum(axis=1)

@@ -17,7 +17,8 @@ from app.automation.coordinate_mapper import CoordinateMapper
 from app.automation.execution_controller import ExecState, ExecutionController
 from app.automation.hotkeys import GlobalHotkeys
 from app.automation.mouse_executor import MouseExecutor, PyAutoGuiBackend
-from app.automation.screen_calibration import ScreenArea, validate_area
+from app.automation.screen_calibration import (ScreenArea, fit_scale,
+                                            validate_area)
 from app.core.image_loader import load_image
 from app.core.quality_checker import rasterize_plan
 from app.models.drawing_plan import DrawingPlan, StrokeType
@@ -85,6 +86,9 @@ class MainWindow(QMainWindow):
         # Durante o encerramento, callbacks tardios do worker não devem
         # tocar nos widgets. Verificado em `_on_processed`/`_on_process_failed`.
         self._closing = False
+        # Guarda de reentrância do closeEvent (o loop de espera processa
+        # eventos Qt; um segundo closeEvent não pode entrar de novo).
+        self._in_close = False
 
         self.signals = _Signals()
         self.signals.state.connect(self._on_state)
@@ -98,6 +102,7 @@ class MainWindow(QMainWindow):
         self.signals.process.connect(self._worker.request)
         self._worker.done.connect(self._on_processed)
         self._worker.failed.connect(self._on_process_failed)
+        self._worker.cancelled.connect(self._on_process_cancelled)
         self._worker.progress_ms.connect(self._on_proc_time)
         self._proc_thread.start()
         self._exec_t0: float | None = None
@@ -107,7 +112,11 @@ class MainWindow(QMainWindow):
             backend = PyAutoGuiBackend()
         except Exception:
             backend = None
-            self._log0("PyAutoGUI indisponível — execução real desativada.")
+        # Sem PyAutoGUI o app não consegue desenhar: usa um backend
+        # inerte e AVISA o usuário. Antes, o aviso era logado antes de
+        # `_build_ui()` (o `log_view` ainda não existia → o erro era
+        # engolido) e a execução "concluía" sem desenhar nada.
+        self._real_backend = backend is not None
         from app.automation.mouse_executor import MockBackend
         self.controller = ExecutionController(
             executor=MouseExecutor(backend=backend or MockBackend()),
@@ -120,10 +129,12 @@ class MainWindow(QMainWindow):
         self.controller.countdown_seconds = clamp_countdown(
             self.settings.execution.countdown_s)
         self.hotkeys = GlobalHotkeys(
-            on_start=self.ui_start, on_pause=self.controller.pause,
+            on_start=self.ui_start, on_pause=self.controller.toggle_pause,
             on_resume=self.controller.resume, on_cancel=self.controller.cancel,
         )
         self._build_ui()
+        if not self._real_backend:
+            self._log0("PyAutoGUI indisponível — execução real desativada.")
         self._apply_settings_to_ui()
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -303,10 +314,11 @@ class MainWindow(QMainWindow):
             "contagem regressiva (F9).")
         self.btn_start.clicked.connect(self.ui_start)
         self.btn_pause = QPushButton("⏸ Pausar")
-        self.btn_pause.setToolTip("Pausa contagem ou desenho (F10).")
+        self.btn_pause.setToolTip("Pausa contagem ou desenho (F10 alterna "
+                                  "pausar/retomar).")
         self.btn_pause.clicked.connect(self.controller.pause)
         self.btn_resume = QPushButton("▶ Retomar")
-        self.btn_resume.setToolTip("Continua de onde parou.")
+        self.btn_resume.setToolTip("Continua de onde parou (F11).")
         self.btn_resume.clicked.connect(self.controller.resume)
         self.btn_cancel = QPushButton("✖ Cancelar")
         self.btn_cancel.setObjectName("danger")
@@ -321,6 +333,9 @@ class MainWindow(QMainWindow):
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumHeight(110)
+        # Sem teto, o log crescia sem limite: cada reprocessamento
+        # re-appendava os avisos (4x por segundo ao mexer no slider).
+        self.log_view.document().setMaximumBlockCount(500)
         exec_lay.addWidget(self.log_view)
         rl.addWidget(exec_box)
         scroll = QScrollArea()
@@ -340,6 +355,14 @@ class MainWindow(QMainWindow):
         ex = self.settings.execution
         self.spin_speed.setValue(int(ex.move_speed_px_s))
         self.spin_delay.setValue(float(ex.stroke_delay_s))
+        # A configuração de PROCESSAMENTO salva também precisa voltar
+        # para o painel. Antes, o painel nascia sempre nos padrões e o
+        # "Salvar cfg" sobrescrevia o arquivo com os padrões — o
+        # config de processamento era inútil.
+        try:
+            self.panel.set_values(self.settings.processing)
+        except Exception as e:
+            self._log0(f"Não foi possível aplicar as configurações salvas: {e}")
 
     # ---- Fluxo ----
     def import_image(self):
@@ -362,7 +385,7 @@ class MainWindow(QMainWindow):
 
     def reprocess(self):
         """Enfileira o processamento no worker (não bloqueia a interface)."""
-        if self.gray is None:
+        if self.gray is None or self._closing:
             return
         self._proc_gen += 1
         self.status_dot.setText("● processando…")
@@ -377,6 +400,14 @@ class MainWindow(QMainWindow):
             return  # encerrando ou obsoleto
         self.status_dot.setText("● erro")
         self._log(f"Erro no processamento: {msg}")
+        self._refresh_ready()
+
+    def _on_process_cancelled(self, gen: int):
+        """Processamento cancelado cooperativamente (ex.: fim do app)."""
+        if self._closing or gen != self._proc_gen:
+            return
+        self.status_dot.setText("● cancelado")
+        self._log("Processamento cancelado.")
         self._refresh_ready()
 
     def _on_processed(self, gen, mask, plan, rep):
@@ -404,7 +435,9 @@ class MainWindow(QMainWindow):
         ncen = len(plan.strokes_by_kind(_ST.CENTERLINE))
         ncon = (len(plan.strokes_by_kind(_ST.OUTER_CONTOUR))
                 + len(plan.strokes_by_kind(_ST.INNER_CONTOUR)))
-        dur = plan.estimate_duration(self.spin_speed.value(), self.spin_delay.value())
+        dur = plan.estimate_duration(self.spin_speed.value(), self.spin_delay.value(),
+                                    scale=fit_scale(self.area, plan.image_width,
+                                                    plan.image_height))
         area_txt = (f"{self.area.width}×{self.area.height}"
                     if self.area is not None else "—")
         self.lbl_stats.setText(
@@ -416,12 +449,24 @@ class MainWindow(QMainWindow):
         self.status_dot.setText("● pronto")
         self._refresh_ready()
 
-    def _refresh_ready(self):
+    def _refresh_ready(self, state: str | None = None):
         """Habilita Iniciar só com plano válido + área calibrada (Fase 6.4)."""
         ok, _ = validate_area(self.area, self.plan is not None
                               and self.plan.total_strokes > 0)
         self.btn_start.setEnabled(bool(ok) and not self.controller.is_busy)
+        self._update_buttons(state if state is not None
+                             else self.controller.state.value)
         self._update_steps()
+
+    def _update_buttons(self, state: str):
+        """Botões de execução refletem o estado.
+
+        Antes, "Pausar", "Retomar" e "Cancelar" ficavam clicáveis
+        sempre e o clique não fazia nada (sem qualquer indicação).
+        """
+        self.btn_pause.setEnabled(state in ("countdown", "running"))
+        self.btn_resume.setEnabled(state == "paused")
+        self.btn_cancel.setEnabled(state in ("countdown", "running", "paused"))
 
     def _update_steps(self):
         """Badges de etapa 1–5 (importar → ajustar → conferir → área → executar)."""
@@ -500,6 +545,15 @@ class MainWindow(QMainWindow):
         if self.plan is None or self.area is None:
             QMessageBox.warning(self, "Não pronto", "Plano ou área ausente.")
             return
+        if not self._real_backend:
+            # Sem PyAutoGUI não há como mover o mouse: avisar em vez de
+            # "desenhar" com um backend inerte e reportar sucesso.
+            QMessageBox.warning(
+                self, "Execução indisponível",
+                "PyAutoGUI não está disponível neste ambiente.\n"
+                "A execução real do mouse está desativada.")
+            self._log("⛔ PyAutoGUI indisponível — nada será desenhado.")
+            return
         mapper = CoordinateMapper(self.plan.image_width, self.plan.image_height, self.area)
         self.minimize_for_draw()
         started = self.controller.start(
@@ -546,7 +600,7 @@ class MainWindow(QMainWindow):
                     self.showNormal()
                 except Exception:
                     pass
-        self._refresh_ready()
+        self._refresh_ready(s)
 
     def _on_proc_time(self, gen: int, ms: float):
         if self._closing or gen != self._proc_gen:
@@ -592,6 +646,12 @@ class MainWindow(QMainWindow):
         log.info(msg)
 
     def closeEvent(self, e):
+        if self._in_close:
+            # Reentrância: o loop de espera processa eventos Qt; um
+            # segundo closeEvent não pode reentrar.
+            super().closeEvent(e)
+            return
+        self._in_close = True
         try:
             self.controller.cancel()
             self.hotkeys.stop()
@@ -599,25 +659,41 @@ class MainWindow(QMainWindow):
             pass
         self._save_layout()
         # Finalização segura: `quit()` não interrompe um slot em execução,
-        # então aguardamos o término REAL da thread (sem `terminate()`).
-        # Uma espera mais longa numa imagem excepcionalmente complexa é
-        # preferível a destruir a QThread ainda em execução (aborto).
+        # então pedimos o cancelamento COOPERATIVO da tarefa e aguardamos
+        # o término REAL da thread (sem `terminate()`).
+        #
+        # Antes: `wait(30000)` na thread da UI (janela "não está
+        # respondendo") e, no timeout, `terminate()` — que mata a thread
+        # no meio de código Python/OpenCV e aborta o processo
+        # (0xC0000409). Agora: o worker consulta a flag de cancelamento
+        # entre as etapas e dentro dos laços longos.
         self._closing = True
         try:
+            self._worker.request_stop()
+            self._proc_thread.requestInterruption()
             self._proc_thread.quit()
-            # Espera o término REAL (nunca `terminate()` de cara: abortar
-            # a QThread no meio do slot corrompe o encerramento — o teste
-            # de shutdown exige ~3s de espera numa tarefa longa). Mas com
-            # teto de 30s: antes era para sempre (imagem gigante = janela
-            # pendurada). Passou do teto, termina à força; callbacks
-            # tardios já são descartados via `_closing`.
-            if not self._proc_thread.wait(30000):
-                self._log0("Processamento travado há 30s: forçando parada.")
+            # Espera em fatias curtas, mantendo a interface viva.
+            deadline = time.monotonic() + 30.0
+            while self._proc_thread.isRunning() and time.monotonic() < deadline:
+                QApplication.processEvents()
+                self._proc_thread.wait(50)
+            if self._proc_thread.isRunning():
+                # NÃO destrói uma thread em execução (abort do processo) e
+                # NÃO usa terminate(). Desacopla do pai para que o
+                # encerramento da janela não a derrube; ela morre com o
+                # processo.
+                self._log0("Processamento não encerrou em 30s: thread "
+                           "desacoplada (encerra com o processo).")
                 try:
-                    self._proc_thread.terminate()
-                    self._proc_thread.wait(3000)
+                    self._proc_thread.setParent(None)
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # Aguarda o fim REAL do desenho: sem isso o mouse pode continuar
+        # se movendo (ou ficar pressionado) depois do app fechar.
+        try:
+            self.controller.wait_finished(timeout=5.0)
         except Exception:
             pass
         super().closeEvent(e)
@@ -637,13 +713,30 @@ def run_app(argv) -> int:
     app.setStyleSheet(DARK_QSS)
     w = MainWindow()
     w.show()
-    # Atalhos globais (melhor esforço)
+    # Atalhos globais (melhor esforço).
+    # "pause" é um TOGGLE (pausar/retomar): antes não existia forma de
+    # retomar pelo teclado e, com a janela minimizada para desenhar, a
+    # pausa virava uma via sem volta.
     try:
-        w.hotkeys.start({
+        bindings = {
             "start": w.settings.execution.hotkey_start,
             "pause": w.settings.execution.hotkey_pause,
             "cancel": w.settings.execution.hotkey_cancel,
-        })
+        }
+        resume_key = (w.settings.execution.hotkey_resume or "").strip()
+        if resume_key:
+            bindings["resume"] = resume_key
+        if not w.hotkeys.start(bindings):
+            # Antes o resultado era ignorado e os botões continuavam
+            # anunciando F9/F10/Esc que nunca funcionariam.
+            w._log("⚠ Atalhos globais indisponíveis (pynput ausente ou "
+                   "sem permissão). Use os botões.")
+    except Exception as e:
+        w._log(f"⚠ Atalhos globais indisponíveis: {e}")
+    # Garante que o listener do pynput seja parado em qualquer caminho
+    # de saída do app (não só quando a janela é fechada).
+    try:
+        app.aboutToQuit.connect(w.hotkeys.stop)
     except Exception:
         pass
     return app.exec()

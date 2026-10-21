@@ -18,6 +18,10 @@ class ProcessingSettings:
     morph_kernel: int = 3  # 3|5|7
     min_detail_area: float = 20.0
     fill_spacing: int = 4  # px na imagem de trabalho
+    # Largura (px) em que um traço deixa de ser "linha" e vira "sólido".
+    # ANTES isto era derivado de `fill_spacing`: mudar o espaçamento do
+    # preenchimento trocava linha↔sólido em silêncio.
+    thin_line_px: float = 4.0
     strategy: str = "auto"  # auto|fill|contour|centerline (modo avançado)
     shading_intensity: float = 0.5  # RESERVADO (experimental, sem efeito no pipeline)
     simplify_epsilon: float = 1.0
@@ -42,7 +46,11 @@ class ExecutionSettings:
     margin_px: int = 10
     countdown_s: int = 5
     hotkey_start: str = "f9"
+    # F10 ALTERNA pausar/retomar (toggle). Antes não havia como retomar
+    # pelo teclado — e, como a janela é minimizada para desenhar, a pausa
+    # virava uma via sem volta.
     hotkey_pause: str = "f10"
+    hotkey_resume: str = "f11"
     hotkey_cancel: str = "esc"
 
     def to_dict(self) -> dict:

@@ -78,7 +78,7 @@ class DrawingPlan:
 
     def estimate_duration(
         self, move_speed_px_s: float = 800.0, stroke_delay_s: float = 0.05,
-        travel_speed_px_s: float | None = None,
+        travel_speed_px_s: float | None = None, scale: float = 1.0,
     ) -> float:
         """Estimativa em segundos.
 
@@ -88,12 +88,18 @@ class DrawingPlan:
         `PYAUTOGUI_MINIMUM_DURATION` custa ~0: o PyAutoGUI o move
         instantaneamente, sem tween — igual ao executor real, que dá
         `duration` proporcional também ao travel pen-up.
+
+        `scale` converte de PX DE IMAGEM para PX DE TELA: o executor
+        percorre a tela, não a imagem. Sem este fator a ETA errava pelo
+        tamanho da área de destino (medido: 0.30s estimado vs ~0.91s
+        real para uma imagem 512px numa área 1080px).
         """
         import math
 
         if move_speed_px_s <= 0:
             move_speed_px_s = 800.0
         travel = travel_speed_px_s if travel_speed_px_s and travel_speed_px_s > 0 else move_speed_px_s
+        scale = float(scale) if scale and scale > 0 else 1.0
         down = 0.0
         up = 0.0
         prev_end: tuple[float, float] | None = None
@@ -101,12 +107,13 @@ class DrawingPlan:
             pts = s.points
             for i in range(1, len(pts)):
                 seg = math.hypot(pts[i][0] - pts[i - 1][0],
-                                 pts[i][1] - pts[i - 1][1])
+                                 pts[i][1] - pts[i - 1][1]) * scale
                 if seg / move_speed_px_s > PYAUTOGUI_MINIMUM_DURATION:
                     down += seg
             if pts:
                 if prev_end is not None:
-                    jump = math.hypot(pts[0][0] - prev_end[0], pts[0][1] - prev_end[1])
+                    jump = math.hypot(pts[0][0] - prev_end[0],
+                                      pts[0][1] - prev_end[1]) * scale
                     # Travel pen-up é um único moveTo no executor: abaixo do
                     # piso, é instantâneo e custa ~0 (mesma regra do pen-down).
                     if jump / travel > PYAUTOGUI_MINIMUM_DURATION:

@@ -94,6 +94,7 @@ def plan_fill_zigzag(
     margin: int = 1,
     min_length: int = 2,
     max_drift: int | None = None,
+    cancel_check=None,
 ) -> list[list[tuple[float, float]]]:
     """Preenchimento contínuo bidirecional (boustrophedon / zigue-zague).
 
@@ -103,6 +104,10 @@ def plan_fill_zigzag(
     furos ou regiões separadas). Sem conexão segura, a polilinha fecha e
     uma nova começa (o executor levanta o mouse entre elas).
     Retorna polilinhas de 2+ pontos; linhas isoladas viram segmentos retos.
+
+    `cancel_check` (opcional): callback consultado a cada linha de
+    varredura; se retornar True, o laço aborta com
+    `app.core.pipeline.ProcessingCancelled`.
     """
     if mask.dtype != np.uint8:
         mask = mask.astype(np.uint8)
@@ -122,6 +127,10 @@ def plan_fill_zigzag(
 
     rows: list[tuple[int, list[tuple[int, int]]]] = []
     for y in range(0, h, spacing):
+        if cancel_check is not None and cancel_check():
+            from app.core.pipeline import ProcessingCancelled
+
+            raise ProcessingCancelled("Preenchimento cancelado.")
         if margin > 0:
             segs = _safe_row_segments(ink[y], ink_eroded[y], margin, min_length)
         else:
@@ -154,17 +163,28 @@ def plan_fill_zigzag(
                     break
                 ny, nsegs = rows[ni]
                 best = None  # (custo, k, entrada)
-                for k, (a, b) in enumerate(nsegs):
-                    if consumed[ni][k]:
-                        continue
-                    for e in (a, b):
-                        if abs(e - cx) > max_drift:
+                # 1ª passada: candidatos PRÓXIMOS (preferidos).
+                # 2ª passada: candidatos mais distantes — numa curva o
+                # deslocamento entre duas linhas de varredura pode
+                # passar do limite (no topo de um círculo r=40 com
+                # espaçamento 4, o deslocamento é ~9px > 8px), e a
+                # cadeia se partia em vários traços. A segurança
+                # continua garantida por `_link_safe` (mesma componente
+                # e segmento integralmente sobre tinta).
+                for limit in (max_drift, max_drift * 4):
+                    for k, (a, b) in enumerate(nsegs):
+                        if consumed[ni][k]:
                             continue
-                        if not _link_safe(ink, labels, cx, cy, e, ny):
-                            continue
-                        d = abs(e - cx)
-                        if best is None or d < best[0]:
-                            best = (d, k, e)
+                        for e in (a, b):
+                            if abs(e - cx) > limit:
+                                continue
+                            if not _link_safe(ink, labels, cx, cy, e, ny):
+                                continue
+                            d = abs(e - cx)
+                            if best is None or d < best[0]:
+                                best = (d, k, e)
+                    if best is not None:
+                        break
                 if best is None:
                     break
                 _, k, e = best

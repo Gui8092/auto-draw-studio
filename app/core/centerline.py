@@ -13,13 +13,17 @@ from __future__ import annotations
 import numpy as np
 
 
-def skeletonize(ink: np.ndarray, max_iter: int | None = None) -> np.ndarray:
+def skeletonize(ink: np.ndarray, max_iter: int | None = None,
+                cancel_check=None) -> np.ndarray:
     """Esqueleto morfológico (Zhang-Suen) de máscara binária 0/1.
 
     Preserva topologia; retorna uint8 0/1 com linhas de 1px.
     `max_iter=None` (padrão) dimensiona sozinho: afinar uma região de
     largura W precisa de ~W/2 passos — o fixo 100 deixava regiões largas
     (>200px) com milhares de px não afinados.
+
+    `cancel_check` (opcional): callback consultado a cada iteração; se
+    retornar True, levanta `app.core.pipeline.ProcessingCancelled`.
     """
     img = (ink > 0).astype(np.uint8)
     if img.sum() == 0:
@@ -28,6 +32,10 @@ def skeletonize(ink: np.ndarray, max_iter: int | None = None) -> np.ndarray:
         h, w = img.shape[:2]
         max_iter = min(400, max(h, w) // 2 + 20)
     for _ in range(max(1, int(max_iter))):
+        if cancel_check is not None and cancel_check():
+            from app.core.pipeline import ProcessingCancelled
+
+            raise ProcessingCancelled("Esqueleto cancelado.")
         # Sequencial (não paralelo): a sub-iteração 2 opera sobre o
         # resultado da 1, senão as duas fileiras centrais de regiões com
         # largura par se apagam mutuamente no mesmo passo.
@@ -129,19 +137,24 @@ def trace_skeleton(skel: np.ndarray, prune_len: int = 3) -> list[list[tuple[int,
             used[y, x] = True
             continue  # pixel isolado: ruído, descarta
         chains.append(walk(y, x))
-    # Poda: remove cadeias curtas que terminam em ponta livre.
+    # Poda: remove ESPORÕES (ramificação curta que sai de uma junção).
+    # Antes, testava só o ÚLTIMO pixel da cadeia: como as cadeias
+    # começam numa ponta livre (grau 1), o esporão NUNCA era podado — e
+    # uma legitimately curta que terminava numa ponta era removida.
     kept = []
     for ch in chains:
         if len(ch) <= max(1, int(prune_len)):
-            ex, ey = ch[-1]
-            if degree[ey, ex] == 1:
-                continue  # esporão de ruído
+            s_degr = degree[ch[0][1], ch[0][0]]
+            e_degr = degree[ch[-1][1], ch[-1][0]]
+            if s_degr == 1 and e_degr >= 2:
+                continue  # esporão: ponta livre -> junção
         kept.append(ch)
     return [c for c in kept if len(c) >= 2]
 
 
 def plan_centerlines(mask: np.ndarray, min_length: int = 4,
-                     prune_len: int = 3) -> list[list[tuple[float, float]]]:
+                     prune_len: int = 3,
+                     cancel_check=None) -> list[list[tuple[float, float]]]:
     """Traços centrais da máscara (para regiões finas já recortadas)."""
     m = np.asarray(mask)
     # Aceita 0/255 ou 0/1 (pipeline interno usa 0/1 em alguns caminhos).
@@ -149,7 +162,7 @@ def plan_centerlines(mask: np.ndarray, min_length: int = 4,
            else (m > 127).astype(np.uint8))
     if ink.sum() == 0:
         return []
-    skel = skeletonize(ink)
+    skel = skeletonize(ink, cancel_check=cancel_check)
     out = []
     for chain in trace_skeleton(skel, prune_len=prune_len):
         if len(chain) >= max(2, int(min_length)):

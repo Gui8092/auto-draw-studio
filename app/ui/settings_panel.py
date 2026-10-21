@@ -12,6 +12,13 @@ from app.ui.widgets import LabeledSlider
 
 CUSTOM_PROFILE = "Personalizado"
 
+# Campos do ProcessingSettings controlados pelo painel (o resto é fixo).
+_PANEL_FIELDS = (
+    "threshold", "method", "brightness", "contrast", "gamma", "denoise",
+    "morph_op", "morph_kernel", "min_detail_area", "fill_spacing",
+    "thin_line_px", "simplify_epsilon", "strategy", "invert",
+)
+
 
 class SettingsPanel(QWidget):
     settings_changed = Signal()
@@ -33,7 +40,7 @@ class SettingsPanel(QWidget):
                                           fmt=lambda v: f"{v}", tick_step=25)
         self.brightness = self._slider(-100, 100, 0, "Ajuste de brilho antes da binarização.",
                                        fmt=lambda v: f"{v:+d}", tick_step=25)
-        self.contrast = self._slider(50, 200, 100, "Contraste ×0.5…×2.0.",
+        self.contrast = self._slider(50, 200, 100, "Contraste ×0.5…×2.0 (pivô no meio-tom).",
                                      fmt=lambda v: f"×{v / 100:.2f}")
         self.gamma = self._slider(20, 300, 100, "Gama ×0.2…×3.0 (/100).",
                                   fmt=lambda v: f"×{v / 100:.2f}")
@@ -43,8 +50,15 @@ class SettingsPanel(QWidget):
         self.morph.addItems(["none", "open", "close", "erode", "dilate"])
         self.morph.setToolTip("open: remove pontos · close: conecta falhas pequenas")
         self.morph.currentTextChanged.connect(self._emit)
+        self.morph_kernel = QComboBox()
+        self.morph_kernel.addItems(["3", "5", "7"])
+        self.morph_kernel.setToolTip("Tamanho do elemento estrutural da morfologia.")
+        self.morph_kernel.currentTextChanged.connect(self._emit)
         self.fill_spacing = self._slider(2, 10, self.s.fill_spacing, "Espaçamento das linhas de preenchimento (px).",
                                          fmt=lambda v: f"{v} px")
+        self.thin_line = self._slider(2, 12, int(self.s.thin_line_px),
+                                      "Largura (px) em que um traço vira 'sólido'.",
+                                      fmt=lambda v: f"{v} px")
         self.min_detail = self._slider(0, 500, int(self.s.min_detail_area), "Área mínima p/ detalhe (remove fiapos).",
                                         fmt=lambda v: f"{v} px", tick_step=100)
         self.simplify = self._slider(0, 50, 10, "Simplificação das trajetórias (÷10).",
@@ -56,6 +70,12 @@ class SettingsPanel(QWidget):
             "fill: só preenchimento · contour: só contornos · "
             "centerline: só linhas centrais")
         self.strategy.currentTextChanged.connect(self._emit)
+        self.work_size = QComboBox()
+        self.work_size.addItems(["256", "512", "1024", "1536", "2048"])
+        self.work_size.setToolTip("Resolução de trabalho: a imagem é reduzida "
+                                   "para este tamanho antes do processamento.")
+        self.work_size.setCurrentText(str(int(self.s.max_work_size)))
+        self.work_size.currentTextChanged.connect(self._emit)
         self.profile = QComboBox()
         self.profile.addItems([CUSTOM_PROFILE] + list(PROFILE_NAMES))
         self.profile.setToolTip("Perfil: ajusta os parâmetros acima de uma vez.")
@@ -77,10 +97,13 @@ class SettingsPanel(QWidget):
         form.addRow("Gama", self.gamma)
         form.addRow("Ruído", self.denoise)
         form.addRow("Morfologia", self.morph)
+        form.addRow("Elem. estrut.", self.morph_kernel)
         form.addRow("Espaç. preench.", self.fill_spacing)
+        form.addRow("Linha ≤", self.thin_line)
         form.addRow("Detalhe mín.", self.min_detail)
         form.addRow("Simplificação", self.simplify)
         form.addRow("Estratégia", self.strategy)
+        form.addRow("Resolução", self.work_size)
         form.addRow("Perfil", self.profile)
         form.addRow(self.invert_btn)
         form.addRow(self.reset_btn)
@@ -97,17 +120,34 @@ class SettingsPanel(QWidget):
             self._mark_custom()
             self.settings_changed.emit()
 
-    def _mark_custom(self):
-        """Indica que os controles divergiram de qualquer preset.
+    # ------------------------------------------------------------------
+    # Perfil: o rótulo DESCREVE o estado (não só detecta mudança)
+    # ------------------------------------------------------------------
+    def _matching_profile(self) -> str:
+        """Nome do preset que bate exatamente com os controles.
 
-        Chamado apenas por mudanças manuais (`_emit` sem `_lock`).
+        Compara com o preset aplicado sobre os PADRÕES (e não sobre os
+        valores atuais): um preset define só alguns campos, então
+        comparar sobre os valores atuais dava falsos positivos.
+        """
+        vals = self.values()
+        for name in PROFILE_NAMES:
+            if vals == apply_profile(ProcessingSettings(), name):
+                return name
+        return CUSTOM_PROFILE
+
+    def _mark_custom(self):
+        """Atualiza o rótulo do perfil para refletir os controles.
+
+        Chamado por mudanças manuais (`_emit` sem `_lock`).
         `blockSignals` evita loop com `currentTextChanged`.
         """
-        if self.profile.currentText() == CUSTOM_PROFILE:
+        match = self._matching_profile()
+        if self.profile.currentText() == match:
             return
         self.profile.blockSignals(True)
         try:
-            self.profile.setCurrentText(CUSTOM_PROFILE)
+            self.profile.setCurrentText(match)
         finally:
             self.profile.blockSignals(False)
 
@@ -116,26 +156,18 @@ class SettingsPanel(QWidget):
             return
         if name == CUSTOM_PROFILE:
             return  # rótulo neutro selecionado manualmente: não reconfigura nada
-        vals = apply_profile(self.values(), name)
-        self._lock = True
-        try:
-            self.method.setCurrentText(vals.method)
-            self.threshold.setValue(int(vals.threshold))
-            self.brightness.setValue(int(vals.brightness))
-            self.contrast.setValue(int(round(vals.contrast * 100)))
-            self.gamma.setValue(int(round(vals.gamma * 100)))
-            self.denoise.setValue(int(vals.denoise))
-            self.morph.setCurrentText(vals.morph_op)
-            self.fill_spacing.setValue(int(vals.fill_spacing))
-            self.min_detail.setValue(int(vals.min_detail_area))
-            self.simplify.setValue(int(round(vals.simplify_epsilon * 10)))
-            if hasattr(vals, "strategy"):
-                self.strategy.setCurrentText(vals.strategy)
-        finally:
-            self._lock = False
+        # Aplica o preset sobre os PADRÕES (e não sobre os valores
+        # atuais): assim cada preset é uma configuração COMPLETA e
+        # "equilibrado" restaura de fato os padrões.
+        vals = apply_profile(ProcessingSettings(), name)
+        self.set_values(vals)
         self.settings_changed.emit()
 
+    # ------------------------------------------------------------------
+    # Valores
+    # ------------------------------------------------------------------
     def values(self) -> ProcessingSettings:
+        """Configuração atual dos controles (round-trip completo)."""
         return ProcessingSettings(
             threshold=self.threshold.value(),
             method=self.method.currentText(),
@@ -145,28 +177,44 @@ class SettingsPanel(QWidget):
             denoise=self.denoise.value(),
             invert=self.invert_btn.isChecked(),
             morph_op=self.morph.currentText(),
-            fill_spacing=self.fill_spacing.value(),
+            morph_kernel=int(self.morph_kernel.currentText() or 3),
             min_detail_area=float(self.min_detail.value()),
+            fill_spacing=self.fill_spacing.value(),
+            thin_line_px=float(self.thin_line.value()),
             simplify_epsilon=self.simplify.value() / 10.0,
             strategy=self.strategy.currentText(),
+            max_work_size=int(self.work_size.currentText() or 512),
         )
 
-    def reset_defaults(self):
+    def set_values(self, s: ProcessingSettings):
+        """Aplica uma configuração nos controles (sem emitir sinais)."""
         self._lock = True
-        d = ProcessingSettings()
-        self.method.setCurrentText(d.method)
-        self.threshold.setValue(d.threshold)
-        self.brightness.setValue(0)
-        self.contrast.setValue(100)
-        self.gamma.setValue(100)
-        self.denoise.setValue(0)
-        self.morph.setCurrentText("none")
-        self.fill_spacing.setValue(d.fill_spacing)
-        self.min_detail.setValue(int(d.min_detail_area))
-        self.simplify.setValue(10)
-        self.strategy.setCurrentText("auto")
-        self.invert_btn.setChecked(False)
-        # Padrões == preset "equilibrado" (vazio por construção).
-        self.profile.setCurrentText("equilibrado")
-        self._lock = False
+        try:
+            self.method.setCurrentText(s.method)
+            self.threshold.setValue(int(s.threshold))
+            self.brightness.setValue(int(s.brightness))
+            self.contrast.setValue(int(round(s.contrast * 100)))
+            self.gamma.setValue(int(round(s.gamma * 100)))
+            self.denoise.setValue(int(s.denoise))
+            self.morph.setCurrentText(s.morph_op)
+            self.morph_kernel.setCurrentText(str(int(s.morph_kernel)))
+            self.fill_spacing.setValue(int(s.fill_spacing))
+            self.thin_line.setValue(int(round(s.thin_line_px)))
+            self.min_detail.setValue(int(s.min_detail_area))
+            self.simplify.setValue(int(round(s.simplify_epsilon * 10)))
+            self.strategy.setCurrentText(s.strategy)
+            self.work_size.setCurrentText(str(int(s.max_work_size)))
+            self.invert_btn.setChecked(bool(s.invert))
+            # O rótulo do perfil reflete o que foi aplicado.
+            self.profile.blockSignals(True)
+            try:
+                self.profile.setCurrentText(self._matching_profile())
+            finally:
+                self.profile.blockSignals(False)
+        finally:
+            self._lock = False
+
+    def reset_defaults(self):
+        """Restaura os padrões (e o rótulo do perfil coerente)."""
+        self.set_values(ProcessingSettings())
         self.settings_changed.emit()

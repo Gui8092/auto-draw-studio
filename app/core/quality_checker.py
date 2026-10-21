@@ -11,13 +11,17 @@ from app.models.drawing_plan import DrawingPlan, StrokeType
 
 @dataclass
 class QualityReport:
-    coverage: float  # 0..1 fração da tinta coberta
+    coverage: float  # 0..1 fração da tinta ALCANÇADA por algum traço
     overflow: float  # fração de tinta simulada fora da máscara
     holes_preserved: bool
     missing_fill: bool  # True se há região sólida sem nenhum fill
     warnings: list[str] = field(default_factory=list)
     simulated_ink_px: int = 0
     target_ink_px: int = 0
+    # Cobertura "pixel a pixel" (sem tolerância): útil para diagnóstico,
+    # mas não como critério — um preenchimento por scanline NUNCA pinta
+    # todos os pixels (com espaçamento 4 e traço de 2px, o teto é ~50%).
+    pixel_coverage: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -105,7 +109,15 @@ def check_quality(
     min_coverage: float = 0.85,
     max_overflow: float = 0.15,
     gray: np.ndarray | None = None,
+    strategy: str | None = None,
 ) -> QualityReport:
+    """Verifica o plano contra a máscara-alvo.
+
+    `strategy` (opcional): a estratégia usada pelo pipeline. Os avisos
+    de cobertura/vazamento/preenchimento só fazem sentido quando a
+    estratégia PREVÊ preenchimento — em "contour" e "centerline" eles
+    eram falsos positivos permanentes.
+    """
     target = (target_mask > 127).astype(np.uint8) * 255
     sim = rasterize_plan(plan, thickness=max(1, int(thickness)))
     sim_b = (sim > 127).astype(np.uint8)
@@ -114,18 +126,32 @@ def check_quality(
     sim_px = int(sim_b.sum())
     inter = int(((sim_b == 1) & (tgt_b == 1)).sum())
     outside = int(((sim_b == 1) & (tgt_b == 0)).sum())
-    coverage = (inter / target_px) if target_px else (1.0 if sim_px == 0 else 0.0)
-    overflow = (outside / sim_px) if sim_px else 0.0
+    pixel_coverage = (inter / target_px) if target_px else (1.0 if sim_px == 0 else 0.0)
+    # Tolerância de 1px: um traço "cobre" a tinta ao redor dele.
+    k = np.ones((3, 3), np.uint8)
+    reach = cv2.dilate(sim_b, k)
+    coverage = (float((reach & tgt_b).sum()) / target_px) if target_px else (
+        1.0 if sim_px == 0 else 0.0)
+    # O vazamento é medido contra o alvo dilatado: um traço encostado
+    # na borda da forma não é "vazamento" (metade da espessura cai fora
+    # da máscara por definição).
+    tgt_dil = cv2.dilate(tgt_b, k)
+    overflow = (float((sim_b & ~tgt_dil).sum()) / sim_px) if sim_px else 0.0
     warnings: list[str] = []
+    strat = (strategy or "").strip().lower()
+    expects_fill = strat in ("", "auto", "fill")
     if target_px == 0 and sim_px > 0:
         warnings.append("Máscara-alvo vazia, mas o plano contém traços.")
     if target_px > 0 and sim_px == 0:
         warnings.append("Plano vazio: nenhum traço rasterizado.")
-    if coverage < min_coverage and target_px > 0:
+    if expects_fill and coverage < min_coverage and target_px > 0:
         warnings.append(f"Cobertura baixa: {coverage:.0%} < {min_coverage:.0%}.")
-    if overflow > max_overflow and sim_px > 0:
+    if expects_fill and overflow > max_overflow and sim_px > 0:
         warnings.append(f"Vazamento alto: {overflow:.0%} dos traços fora da máscara.")
-    # Buracos: componentes de fundo cercados de tinta não devem ser pintados
+    # Buracos: componentes de fundo cercados de tinta não devem ser pintados.
+    # Mede só os traços de PREENCHIMENTO: o contorno do próprio furo
+    # (INNER_CONTOUR) cai dentro do furo por definição e antes contava
+    # como "invasão" — aviso falso em furos pequenos.
     holes_ok = True
     inv = (1 - tgt_b).astype(np.uint8) * 255
     n, labels, _, _ = cv2.connectedComponentsWithStats(inv, 8) if inv.size else (1, inv, None, None)
@@ -133,20 +159,25 @@ def check_quality(
         h, w = labels.shape
         border = set(np.unique(labels[0, :])) | set(np.unique(labels[-1, :])) | set(
             np.unique(labels[:, 0])) | set(np.unique(labels[:, -1]))
+        fill_plan = DrawingPlan(
+            strokes=[s for s in plan.strokes
+                     if s.kind in (StrokeType.FILL, StrokeType.CENTERLINE)],
+            image_width=plan.image_width, image_height=plan.image_height)
+        fill_b = (rasterize_plan(fill_plan, thickness=max(1, int(thickness))) > 127)
         for i in range(1, n):
             if i in border:
                 continue
             hole_area = int((labels == i).sum())
             if hole_area < 4:
                 continue
-            painted = int(((labels == i) & (sim_b == 1)).sum())
+            painted = int(((labels == i) & fill_b).sum())
             if painted > hole_area * 0.35:
                 holes_ok = False
                 warnings.append("Buraco/área branca interna foi invadida pelo preenchimento.")
                 break
     fills = [s for s in plan.strokes if s.kind in (StrokeType.FILL, StrokeType.CENTERLINE)]
     missing_fill = bool(target_px > 200 and not fills)
-    if missing_fill:
+    if missing_fill and expects_fill:
         warnings.append("Sem traços de preenchimento: interiores ficarão vazios.")
     if gray is not None:
         for loss in detect_detail_loss(gray, target_mask):
@@ -155,4 +186,5 @@ def check_quality(
         coverage=coverage, overflow=overflow, holes_preserved=holes_ok,
         missing_fill=missing_fill, warnings=warnings,
         simulated_ink_px=sim_px, target_ink_px=target_px,
+        pixel_coverage=pixel_coverage,
     )

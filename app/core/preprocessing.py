@@ -11,15 +11,23 @@ def apply_adjustments(
     contrast: float = 1.0,
     gamma: float = 1.0,
 ) -> np.ndarray:
-    """Aplica brilho (-100..100), contraste (0.5..2.0) e gama (0.2..3.0)."""
+    """Aplica brilho (-100..100), contraste (0.5..2.0) e gama (0.2..3.0).
+
+    O contraste tem PIVÔ em meio-tom (127.5): sem o pivô, um contraste de
+    0.5 derrubava o branco (255) para 127 — abaixo do limiar padrão
+    (128) — e a página inteira passava a ser tratada como tinta.
+    """
     img = gray.astype(np.float32)
-    img = img * float(contrast) + float(brightness)
-    img = np.clip(img, 0, 255)
+    img = (img - 127.5) * float(contrast) + 127.5
+    img = img + float(brightness)
+    img = np.clip(img, 0.0, 255.0)
     if abs(float(gamma) - 1.0) > 1e-6 and float(gamma) > 0:
         lut = np.array([((i / 255.0) ** (1.0 / float(gamma))) * 255.0 for i in range(256)],
                        dtype=np.float32)
-        img = lut[np.clip(img, 0, 255).astype(np.uint8)]
-    return np.clip(img, 0, 255).astype(np.uint8)
+        img = lut[np.clip(np.rint(img), 0, 255).astype(np.uint8)]
+    # `np.rint` (arredonda) em vez de truncar: truncar aplicava um viés
+    # sistemático de -0.5 nível antes da binarização.
+    return np.clip(np.rint(img), 0, 255).astype(np.uint8)
 
 
 def denoise(gray: np.ndarray, strength: int = 0) -> np.ndarray:

@@ -127,24 +127,24 @@ class MouseExecutor:
             if self._cancelled:
                 return False
             self.backend.mouseDown(button="left")
-            try:
-                px, py = x0, y0
-                for x, y in screen_points[1:]:
-                    if self._cancelled:
-                        break
-                    if not self._wait_resume():
-                        break
-                    self.backend.moveTo(
-                        x, y,
-                        duration=self._segment_duration(px, py, x, y))
-                    px, py = x, y
-                    self._last_pos = (px, py)
-            finally:
-                self.backend.mouseUp(button="left")
-        except Exception:
+            px, py = x0, y0
+            for x, y in screen_points[1:]:
+                if self._cancelled:
+                    break
+                if not self._wait_resume():
+                    break
+                self.backend.moveTo(
+                    x, y,
+                    duration=self._segment_duration(px, py, x, y))
+                px, py = x, y
+                self._last_pos = (px, py)
+        finally:
+            # Solta o botão EXATAMENTE uma vez. Antes, um erro depois do
+            # mouseDown disparava o `finally` interno E o `except`
+            # externo: dois `mouseUp` para o mesmo traço (um soltava o
+            # botão de um app qualquer).
             try:
                 self.backend.mouseUp(button="left")
             except Exception:
                 pass
-            raise
         return not self._cancelled

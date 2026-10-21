@@ -73,11 +73,16 @@ class CanvasSelector(QWidget):
             rect = None
         if rect is None:
             rect = QApplication.primaryScreen().virtualGeometry()
-        self.setGeometry(rect)
         self._p0 = self._p1 = None
         self.selected = None
         self._finished = False
-        self.showFullScreen()
+        # `show()` (e NÃO `showFullScreen()`): o showFullScreen
+        # sobrescreve a geometria com a tela do próprio widget e o
+        # overlay deixava de cobrir os outros monitores.
+        self.setGeometry(rect)
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _local_pos(self, e) -> QPoint:
         pos = e.position().toPoint()

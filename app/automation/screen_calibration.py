@@ -43,3 +43,15 @@ def validate_area(area: ScreenArea | None, has_strokes: bool) -> tuple[bool, str
     if not has_strokes:
         return False, "Plano sem traços: processe uma imagem primeiro."
     return True, "Pronto para desenhar."
+
+
+def fit_scale(area: ScreenArea | None, image_w: int, image_h: int) -> float:
+    """Fator de escala da imagem dentro da área (1.0 = 1:1).
+
+    É o mesmo fator usado por `ScreenArea.fit_aspect` — o executor
+    percorre distâncias em PX DE TELA, então a estimativa de tempo
+    precisa deste fator (sem ele a ETA errava por um fator ~2).
+    """
+    if area is None or image_w <= 0 or image_h <= 0:
+        return 1.0
+    return min(area.width / image_w, area.height / image_h)

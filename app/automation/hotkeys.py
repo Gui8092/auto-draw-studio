@@ -9,7 +9,22 @@ enfileirada automática do Qt.
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable
+
+log = logging.getLogger("auto_draw_studio.hotkeys")
+
+# Modificadores reconhecidos (normalizados: "ctrl_l" → "ctrl").
+_MODIFIER_KEYS = ("ctrl", "alt", "shift", "cmd")
+
+_MODIFIER_ALIASES = {
+    "ctrl_l": "ctrl", "ctrl_r": "ctrl", "control": "ctrl", "control_l": "ctrl",
+    "control_r": "ctrl",
+    "alt_l": "alt", "alt_r": "alt", "option": "alt",
+    "shift_l": "shift", "shift_r": "shift",
+    "cmd_l": "cmd", "cmd_r": "cmd", "win": "cmd", "super": "cmd",
+    "meta": "cmd",
+}
 
 
 class GlobalHotkeys:
@@ -28,14 +43,47 @@ class GlobalHotkeys:
         self._listener = None
         self.bindings: dict[str, str] = {}
         self._bridge = None
+        # Teclas/modificadores atualmente pressionados (para detectar
+        # auto-repeat e montar combinações como "ctrl+f9").
+        self._pressed_keys: set[str] = set()
+        self._pressed_mods: set[str] = set()
 
     # -- tradução tecla → ação (pura, testável sem Qt/OS) --
-    def _key_to_action(self, key_name: str | None) -> str | None:
-        if not key_name:
+    def _normalize_key(self, key_name: str | None) -> str:
+        """Normaliza nomes de tecla ('key.f9', 'F9', 'ctrl_l' → 'f9', 'ctrl')."""
+        if key_name is None:
+            return ""
+        s = str(key_name).lower().replace("key.", "").strip()
+        return _MODIFIER_ALIASES.get(s, s)
+
+    def _key_to_action(self, key_name: str | None,
+                       modifiers=None) -> str | None:
+        """Traduz tecla (+ modificadores) para uma ação.
+
+        Aceita atalhos simples ("f9") e combinações ("ctrl+f9").
+        A combinação exata tem prioridade sobre a tecla simples.
+        """
+        name = self._normalize_key(key_name)
+        if not name:
             return None
-        name = str(key_name).lower().replace("key.", "")
+        mods = {self._normalize_key(m) for m in (modifiers or ())}
+        mods = {m for m in mods if m in _MODIFIER_KEYS}
+        # 1) combinação exata (ex.: "ctrl+f9")
         for action, hotkey in self.bindings.items():
-            if str(hotkey).lower() == name and action in self.handlers:
+            h = self._normalize_key(hotkey)
+            if "+" not in h:
+                continue
+            parts = [p for p in h.split("+") if p]
+            if not parts:
+                continue
+            if parts[-1] == name and set(parts[:-1]) == mods:
+                return action
+        # 2) tecla simples
+        for action, hotkey in self.bindings.items():
+            h = self._normalize_key(hotkey)
+            if "+" in h:
+                continue
+            if h == name:
                 return action
         return None
 
@@ -47,7 +95,9 @@ class GlobalHotkeys:
         try:
             handler()
         except Exception:
-            pass
+            # Antes a exceção era engolida em silêncio: o usuário apertava
+            # F9 e nada acontecia, sem nenhum registro no log.
+            log.exception("Falha no handler de atalho '%s'", action)
         return True
 
     def _get_bridge(self):
@@ -70,6 +120,8 @@ class GlobalHotkeys:
         # Evita listeners duplicados após reinicializações.
         self.stop()
         self.bindings = dict(bindings or {})
+        self._pressed_keys.clear()
+        self._pressed_mods.clear()
         try:
             from pynput import keyboard
         except Exception:
@@ -78,18 +130,47 @@ class GlobalHotkeys:
 
         def on_press(key):
             try:
-                name = getattr(key, "name", None) or getattr(key, "char", None) or str(key)
+                name = (getattr(key, "name", None) or getattr(key, "char", None)
+                        or str(key))
             except Exception:
                 return
-            action = self._key_to_action(name)
+            norm = self._normalize_key(name)
+            if not norm:
+                return
+            if norm in _MODIFIER_KEYS:
+                self._pressed_mods.add(norm)
+                return
+            # Ignora auto-repeat: segurar a tecla não deve re-disparar a
+            # ação (antes, F9 segurado reiniciava o desenho várias vezes).
+            if norm in self._pressed_keys:
+                return
+            self._pressed_keys.add(norm)
+            action = self._key_to_action(norm, self._pressed_mods)
             if action is not None:
                 try:
                     bridge.action.emit(action)  # thread-safe; handlers rodam na UI
                 except Exception:
                     pass
 
+        def on_release(key):
+            try:
+                name = (getattr(key, "name", None) or getattr(key, "char", None)
+                        or str(key))
+            except Exception:
+                return
+            norm = self._normalize_key(name)
+            if norm in _MODIFIER_KEYS:
+                self._pressed_mods.discard(norm)
+            else:
+                self._pressed_keys.discard(norm)
+
         try:
-            self._listener = keyboard.Listener(on_press=on_press)
+            try:
+                self._listener = keyboard.Listener(on_press=on_press,
+                                                   on_release=on_release)
+            except TypeError:
+                # Listener sem suporte a on_release (versões antigas / mocks).
+                self._listener = keyboard.Listener(on_press=on_press)
             self._listener.start()
             return True
         except Exception:
@@ -97,12 +178,22 @@ class GlobalHotkeys:
             return False
 
     def stop(self):
+        listener = self._listener
+        self._listener = None
+        if listener is None:
+            return
         try:
-            if self._listener is not None:
-                self._listener.stop()
+            listener.stop()
         except Exception:
             pass
-        self._listener = None
+        # Libera o hook do SO de forma síncrona (senão o listener fica
+        # vivo até o fim do interpretador).
+        try:
+            join = getattr(listener, "join", None)
+            if callable(join):
+                join(timeout=1)
+        except Exception:
+            pass
 
     @property
     def is_running(self) -> bool:
