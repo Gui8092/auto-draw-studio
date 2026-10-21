@@ -2,7 +2,8 @@
 
 Desktop em Python (PySide6) que converte imagens em desenhos e reproduz os traços
 automaticamente com o mouse. Motor híbrido por região: sólidos amplos viram
-**zigue-zague contínuo**, traços finos viram **linhas centrais**, furos preservados.
+**zigue-zague contínuo**, traços finos viram **linhas centrais**, furos preservados,
+e áreas de tom médio podem virar **hachuras**.
 
 ![Janela principal](docs/screenshot_main.png)
 
@@ -30,8 +31,9 @@ python main.py
 Fluxo: Importar imagem → ajustar limiar/brilho/contraste/gama →
 conferir abas (Original / P&B / Trajetórias / Simulação) →
 Selecionar área → Iniciar (F9) → contagem 5 s → desenho.
-Pausar (F10), Cancelar (Esc). O FAILSAFE do PyAutoGUI permanece ligado:
-arrastar o mouse ao canto superior-esquerdo aborta.
+Pausar/retomar (F10, alterna), Retomar (F11), Cancelar (Esc).
+O FAILSAFE do PyAutoGUI permanece ligado: arrastar o mouse ao canto
+superior-esquerdo aborta.
 
 ## Calibração e preparação
 
@@ -42,14 +44,23 @@ arrastar o mouse ao canto superior-esquerdo aborta.
 4. DPI/escala do Windows: maximize o app de destino sempre na mesma
    resolução da calibração; se mudar de monitor, calibre de novo.
 
-## Testes
+## Estratégia de desenho
 
-```powershell
-python -m pytest tests/ -q
-```
+| Modo | O que faz |
+|---|---|
+| **auto** (padrão) | por região — traço fino vira linha central, sólido vira zigue-zague, furos preservados |
+| **sombreado** | como o auto, mas regiões de tom **médio** viram **hachuras** (as escuras continuam chapadas) — o modo que dá cara de desenho a lápis |
+| **fill** | só preenchimento por zigue-zague |
+| **contour** | só contornos/detalhes (bordas limpas, sem preenchimento) |
+| **centerline** | só linhas centrais (line art) |
 
-122+ testes (núcleo, automação com mocks, UI offscreen). Nenhum teste move
-o mouse real (backend mock).
+- **Perfis:** equilibrado, rapido, fidelidade, linha_fina, logo. O rótulo do
+  perfil **descreve** o estado atual: se os controles voltarem a bater com um
+  preset, o nome dele reaparece; caso contrário vira "Personalizado".
+- No modo **sombreado** use um **limiar alto** (≈180): as hachuras cobrem os
+  tons médios, que o limiar padrão (128) não inclui.
+- Hachuras: espaçamento, ângulo, tom de corte e densidade são ajustáveis
+  (tons claros → hachuras mais ralas).
 
 ## Interface
 
@@ -59,37 +70,51 @@ o mouse real (backend mock).
 - Etapas 1→5 no cabeçalho, botão Iniciar habilitado só quando pronto,
   cronometria de decorrido/restante pelo ritmo medido.
 - Geometria da janela e divisor persistidos (QSettings).
+- **Pincel (px)**: espessura do pincel do app de destino. A prévia de
+  simulação passa a prever o traço real (0 = automático).
+- **Resolução**: tamanho de trabalho (256…2048 px). Imagens grandes são
+  reduzidas antes do processamento — increase para mais detalhe (e mais tempo).
 
-## Empacotamento Windows
+## Projetos e exportação
+
+- **Projeto** (`.ads.json`): guarda imagem + ajustes + trajetórias. Abrir um
+  projeto restaura tudo, inclusive os atalhos.
+- **SVG**: exporta as trajetórias para revisar/editar fora do app.
+- **Salvar cfg**: grava só os ajustes (em `~/.auto_draw_studio/settings.json`).
+
+## Testes
 
 ```powershell
-pip install pyinstaller
-pyinstaller packaging/auto_draw_studio.spec   # pasta (validar primeiro)
-# depois, se ok:
-pyinstaller --windowed --onefile --name AutoDrawStudio --icon assets/icon.ico --add-data "assets;assets" main.py
+$env:QT_QPA_PLATFORM='offscreen'; python -m pytest tests/ -q
 ```
 
-Valide o `.exe` abrindo sem console e rodando o fluxo completo. Se faltar o
-plugin de plataforma Qt ("windows"), confira o `collect_all('PySide6')` no `.spec`.
+206 testes (núcleo, automação com mocks, UI offscreen, baseline de qualidade).
+Nenhum teste move o mouse real (backend mock). O `baseline_quality.json`
+trava as métricas de qualidade por caso: se um ajuste de algoritmo piorar o
+desenho (cobertura, furos, deslocamento), o teste falha.
+
+> Os testes são **locais** (o `.gitignore` do projeto mantém `tests/` fora do
+> repositório).
 
 ## Atalhos
 
 | Ação | Padrão |
 |---|---|
 | Iniciar | F9 |
-| Pausar | F10 |
+| Pausar / Retomar (alterna) | F10 |
+| Retomar | F11 |
 | Cancelar/emergência | Esc |
 
-Configuráveis em `settings.json` (execução). Podem ser alterados no código
-via `GlobalHotkeys.start({...})`.
+Configuráveis em `settings.json` (execução). Aceitam combinações com
+modificadores (`ctrl+f9`) e ignoram o auto-repeat do teclado.
 
 ## Estrutura
 
 ```
 app/core/        image_loader, preprocessing, thresholding, morphology,
                  contour_extractor, region_analyzer, fill_planner (zigue-zague),
-                 centerline, strategy (seletor+perfis), shading_planner (exp.),
-                 path_optimizer, quality_checker, pipeline
+                 centerline, strategy (seletor+perfis), shading_planner
+                 (hachuras), path_optimizer, quality_checker, pipeline
 app/automation/  screen_calibration, coordinate_mapper, mouse_executor,
                  hotkeys (pynput), execution_controller (estados + thread)
 app/models/      drawing_plan (Stroke/StrokeType/DrawingPlan+SVG), settings
@@ -97,7 +122,7 @@ app/ui/          main_window, image_preview, settings_panel, widgets,
                  path_preview (zoom/pan/filtros/travel), canvas_selector,
                  process_worker (QThread), styles
 app/utils/       logging_setup, persistence (JSON versionado)
-tests/           suíte de UI offscreen + núcleo (ver `pytest --collect-only`)
+tests/           suíte de UI offscreen + núcleo + baseline de qualidade
 benchmarks/      bench_zigzag.py, bench_suite.py + PNGs em `benchmarks/out/`
 packaging/       auto_draw_studio.spec (PyInstaller, Windows)
 assets/          icon.png/ico + gerador | docs/ screenshot
@@ -110,19 +135,10 @@ independentes).
 ## Limitações conhecidas
 
 - Fotografias complexas são simplificadas (aviso de cobertura baixa);
-  o programa informa em vez de fingir fidelidade.
-- A espessura da simulação acompanha o espaçamento (`≈ spacing/2`); o traço
-  físico depende do pincel do app de destino.
-## Estratégia de desenho
-
-- **auto (padrão):** por região — traço fino vira linha central, sólido amplo
-  vira zigue-zague, furos preservados; o log registra a escolha por região.
-- **fill / contour / centerline:** modos manuais avançados.
-- **Perfis:** equilibrado, rapido, fidelidade, linha_fina, logo (Combinam
-  parâmetros existentes; `linha_fina` força centerline).
-- Hachura/pontilhismo (`shading_planner`) seguem EXPERIMENTAIS e fora do
-  pipeline.
-- Pausar (F10) funciona na contagem regressiva e no desenho; retomar
-  continua de onde parou sem pular a contagem. Cancelar funciona em ambos.
-- Seleção de área cobre o monitor primário virtual; multi-monitor com DPIs
-  muito diferentes exige recalibração.
+  o programa informa em vez de fingir fidelidade. Use o modo **sombreado**
+  para um resultado mais "desenhado".
+- A espessura da simulação acompanha o pincel informado (ou ≈ spacing/2);
+  o traço físico depende do pincel do app de destino.
+- O modo centerline ignora regiões sólidas (avisa quando não acha nada).
+- Seleção de área cobre o desktop virtual; multi-monitor com DPIs muito
+  diferentes exige recalibração.

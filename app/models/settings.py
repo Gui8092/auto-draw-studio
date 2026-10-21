@@ -22,8 +22,12 @@ class ProcessingSettings:
     # ANTES isto era derivado de `fill_spacing`: mudar o espaçamento do
     # preenchimento trocava linha↔sólido em silêncio.
     thin_line_px: float = 4.0
-    strategy: str = "auto"  # auto|fill|contour|centerline (modo avançado)
-    shading_intensity: float = 0.5  # RESERVADO (experimental, sem efeito no pipeline)
+    strategy: str = "auto"  # auto|fill|contour|centerline|sombreado
+    # Hachuras (modo "sombreado"): regiões de tom médio viram hachuras.
+    hatch_spacing: int = 6      # px entre linhas de hachura
+    hatch_angle: float = 45.0   # graus
+    hatch_threshold: float = 120.0  # tom médio acima do qual a região é hachurada
+    shading_intensity: float = 0.5  # densidade das hachuras (0=ralo, 1=denso)
     simplify_epsilon: float = 1.0
     max_work_size: int = 512
 
@@ -45,6 +49,11 @@ class ExecutionSettings:
     stroke_delay_s: float = 0.03
     margin_px: int = 10
     countdown_s: int = 5
+    # Espessura do pincel do app de destino (px de tela). 0 = automático
+    # (≈ metade do espaçamento do preenchimento). Antes a prévia usava
+    # sempre essa heurística, e o traço real depende do pincel escolhido
+    # lá fora — a prévia não previa o resultado.
+    brush_px: int = 0
     hotkey_start: str = "f9"
     # F10 ALTERNA pausar/retomar (toggle). Antes não havia como retomar
     # pelo teclado — e, como a janela é minimizada para desenhar, a pausa
@@ -62,6 +71,24 @@ class ExecutionSettings:
         for k, v in (data or {}).items():
             if hasattr(base, k):
                 setattr(base, k, v)
+        # Clamp dos valores: o settings.json é editável à mão (o README
+        # convida a isso) e um valor absurdo não pode quebrar o app.
+        try:
+            base.move_speed_px_s = max(1.0, float(base.move_speed_px_s))
+        except (TypeError, ValueError):
+            base.move_speed_px_s = ExecutionSettings.move_speed_px_s
+        try:
+            base.stroke_delay_s = max(0.0, float(base.stroke_delay_s))
+        except (TypeError, ValueError):
+            base.stroke_delay_s = ExecutionSettings.stroke_delay_s
+        try:
+            base.countdown_s = max(1, min(30, int(base.countdown_s)))
+        except (TypeError, ValueError):
+            base.countdown_s = ExecutionSettings.countdown_s
+        try:
+            base.brush_px = max(0, min(30, int(base.brush_px)))
+        except (TypeError, ValueError):
+            base.brush_px = ExecutionSettings.brush_px
         return base
 
 

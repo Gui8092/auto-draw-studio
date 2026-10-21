@@ -160,13 +160,14 @@ def classify_components(mask: np.ndarray, thin_px: float = 4.0,
     return dec
 
 
-STRATEGIES = ("auto", "fill", "contour", "centerline")
+STRATEGIES = ("auto", "fill", "contour", "centerline", "sombreado")
 
 # Campos que os perfis controlam (os mesmos do painel de ajustes).
 _PROFILE_FIELDS = (
     "threshold", "method", "brightness", "contrast", "gamma", "denoise",
     "morph_op", "morph_kernel", "min_detail_area", "fill_spacing",
-    "thin_line_px", "simplify_epsilon", "strategy", "invert",
+    "thin_line_px", "hatch_spacing", "hatch_angle", "hatch_threshold",
+    "shading_intensity", "simplify_epsilon", "strategy", "invert",
 )
 
 

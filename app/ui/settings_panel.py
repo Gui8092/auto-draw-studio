@@ -16,7 +16,8 @@ CUSTOM_PROFILE = "Personalizado"
 _PANEL_FIELDS = (
     "threshold", "method", "brightness", "contrast", "gamma", "denoise",
     "morph_op", "morph_kernel", "min_detail_area", "fill_spacing",
-    "thin_line_px", "simplify_epsilon", "strategy", "invert",
+    "thin_line_px", "hatch_spacing", "hatch_angle", "hatch_threshold",
+    "shading_intensity", "simplify_epsilon", "strategy", "invert",
 )
 
 
@@ -59,6 +60,19 @@ class SettingsPanel(QWidget):
         self.thin_line = self._slider(2, 12, int(self.s.thin_line_px),
                                       "Largura (px) em que um traço vira 'sólido'.",
                                       fmt=lambda v: f"{v} px")
+        self.hatch_spacing = self._slider(2, 16, int(self.s.hatch_spacing),
+                                          "Espaçamento entre linhas de hachura.",
+                                          fmt=lambda v: f"{v} px")
+        self.hatch_angle = self._slider(0, 90, int(self.s.hatch_angle),
+                                        "Ângulo das hachuras (graus).",
+                                        fmt=lambda v: f"{v}°")
+        self.hatch_threshold = self._slider(20, 250, int(self.s.hatch_threshold),
+                                            "Tom (0-255) acima do qual a região "
+                                            "vira hachura em vez de preenchimento.",
+                                            fmt=lambda v: f"{v}")
+        self.shading_intensity = self._slider(0, 100, int(self.s.shading_intensity * 100),
+                                              "Densidade das hachuras.",
+                                              fmt=lambda v: f"{v}%")
         self.min_detail = self._slider(0, 500, int(self.s.min_detail_area), "Área mínima p/ detalhe (remove fiapos).",
                                         fmt=lambda v: f"{v} px", tick_step=100)
         self.simplify = self._slider(0, 50, 10, "Simplificação das trajetórias (÷10).",
@@ -68,7 +82,8 @@ class SettingsPanel(QWidget):
         self.strategy.setToolTip(
             "auto: por região (fino→linha central, sólido→zigue-zague) · "
             "fill: só preenchimento · contour: só contornos · "
-            "centerline: só linhas centrais")
+            "centerline: só linhas centrais · "
+            "sombreado: região de tom médio vira hachura")
         self.strategy.currentTextChanged.connect(self._emit)
         self.work_size = QComboBox()
         self.work_size.addItems(["256", "512", "1024", "1536", "2048"])
@@ -100,6 +115,10 @@ class SettingsPanel(QWidget):
         form.addRow("Elem. estrut.", self.morph_kernel)
         form.addRow("Espaç. preench.", self.fill_spacing)
         form.addRow("Linha ≤", self.thin_line)
+        form.addRow("Hach. px", self.hatch_spacing)
+        form.addRow("Ângulo hach.", self.hatch_angle)
+        form.addRow("Tom hach.", self.hatch_threshold)
+        form.addRow("Densidade", self.shading_intensity)
         form.addRow("Detalhe mín.", self.min_detail)
         form.addRow("Simplificação", self.simplify)
         form.addRow("Estratégia", self.strategy)
@@ -181,29 +200,46 @@ class SettingsPanel(QWidget):
             min_detail_area=float(self.min_detail.value()),
             fill_spacing=self.fill_spacing.value(),
             thin_line_px=float(self.thin_line.value()),
+            hatch_spacing=self.hatch_spacing.value(),
+            hatch_angle=float(self.hatch_angle.value()),
+            hatch_threshold=float(self.hatch_threshold.value()),
+            shading_intensity=self.shading_intensity.value() / 100.0,
             simplify_epsilon=self.simplify.value() / 10.0,
             strategy=self.strategy.currentText(),
             max_work_size=int(self.work_size.currentText() or 512),
         )
 
     def set_values(self, s: ProcessingSettings):
-        """Aplica uma configuração nos controles (sem emitir sinais)."""
+        """Aplica uma configuração nos controles (sem emitir sinais).
+
+        Valores fora das opções dos combos são APROXIMADOS (QComboBox
+        não editável ignora `setCurrentText` de um item desconhecido) —
+        sem isso, um `max_work_size` fora da lista seria perdido em
+        silêncio no round-trip.
+        """
         self._lock = True
         try:
-            self.method.setCurrentText(s.method)
+            self.method.setCurrentText(self._combo_value(self.method, s.method))
             self.threshold.setValue(int(s.threshold))
             self.brightness.setValue(int(s.brightness))
             self.contrast.setValue(int(round(s.contrast * 100)))
             self.gamma.setValue(int(round(s.gamma * 100)))
             self.denoise.setValue(int(s.denoise))
-            self.morph.setCurrentText(s.morph_op)
-            self.morph_kernel.setCurrentText(str(int(s.morph_kernel)))
+            self.morph.setCurrentText(self._combo_value(self.morph, s.morph_op))
+            self.morph_kernel.setCurrentText(
+                self._combo_value(self.morph_kernel, str(int(s.morph_kernel))))
             self.fill_spacing.setValue(int(s.fill_spacing))
             self.thin_line.setValue(int(round(s.thin_line_px)))
+            self.hatch_spacing.setValue(int(s.hatch_spacing))
+            self.hatch_angle.setValue(int(round(s.hatch_angle)))
+            self.hatch_threshold.setValue(int(round(s.hatch_threshold)))
+            self.shading_intensity.setValue(int(round(s.shading_intensity * 100)))
             self.min_detail.setValue(int(s.min_detail_area))
             self.simplify.setValue(int(round(s.simplify_epsilon * 10)))
-            self.strategy.setCurrentText(s.strategy)
-            self.work_size.setCurrentText(str(int(s.max_work_size)))
+            self.strategy.setCurrentText(
+                self._combo_value(self.strategy, s.strategy))
+            self.work_size.setCurrentText(
+                self._combo_value(self.work_size, str(int(s.max_work_size))))
             self.invert_btn.setChecked(bool(s.invert))
             # O rótulo do perfil reflete o que foi aplicado.
             self.profile.blockSignals(True)
@@ -213,6 +249,23 @@ class SettingsPanel(QWidget):
                 self.profile.blockSignals(False)
         finally:
             self._lock = False
+
+    @staticmethod
+    def _combo_value(combo, wanted: str) -> str:
+        """Valor aplicável num combo (o mais próximo se não existir)."""
+        wanted = str(wanted)
+        items = [combo.itemText(i) for i in range(combo.count())]
+        if wanted in items:
+            return wanted
+        if not items:
+            return wanted
+        # Escolhe o item numérico mais próximo (ex.: max_work_size=1000
+        # → 1024).
+        try:
+            target = float(wanted)
+            return min(items, key=lambda t: abs(float(t) - target))
+        except (TypeError, ValueError):
+            return items[0]
 
     def reset_defaults(self):
         """Restaura os padrões (e o rótulo do perfil coerente)."""

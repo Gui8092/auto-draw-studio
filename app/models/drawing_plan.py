@@ -128,18 +128,22 @@ class DrawingPlan:
             "image_height": self.image_height,
             "spacing_px": self.spacing_px,
             "strokes": [s.to_dict() for s in self.strokes],
+            # As notas da estratégia ajudam a entender o plano salvo.
+            "strategy_notes": list(self.strategy_notes),
         }
 
     @staticmethod
     def from_dict(data: dict) -> "DrawingPlan":
         data = data if isinstance(data, dict) else {}
         strokes = data.get("strokes", []) or []
+        notes = data.get("strategy_notes", []) or []
         return DrawingPlan(
             strokes=[Stroke.from_dict(s) for s in strokes
                      if isinstance(s, dict)],
             image_width=int(data.get("image_width", 0)),
             image_height=int(data.get("image_height", 0)),
             spacing_px=float(data.get("spacing_px", 4.0)),
+            strategy_notes=[str(n) for n in notes if isinstance(n, str)],
         )
 
     def to_svg(self, stroke_width: float = 1.0) -> str:

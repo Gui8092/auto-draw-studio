@@ -139,7 +139,7 @@ def check_quality(
     overflow = (float((sim_b & ~tgt_dil).sum()) / sim_px) if sim_px else 0.0
     warnings: list[str] = []
     strat = (strategy or "").strip().lower()
-    expects_fill = strat in ("", "auto", "fill")
+    expects_fill = strat in ("", "auto", "fill", "sombreado")
     if target_px == 0 and sim_px > 0:
         warnings.append("Máscara-alvo vazia, mas o plano contém traços.")
     if target_px > 0 and sim_px == 0:
@@ -161,7 +161,8 @@ def check_quality(
             np.unique(labels[:, 0])) | set(np.unique(labels[:, -1]))
         fill_plan = DrawingPlan(
             strokes=[s for s in plan.strokes
-                     if s.kind in (StrokeType.FILL, StrokeType.CENTERLINE)],
+                     if s.kind in (StrokeType.FILL, StrokeType.CENTERLINE,
+                                   StrokeType.HATCH)],
             image_width=plan.image_width, image_height=plan.image_height)
         fill_b = (rasterize_plan(fill_plan, thickness=max(1, int(thickness))) > 127)
         for i in range(1, n):

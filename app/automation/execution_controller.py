@@ -93,6 +93,20 @@ class ExecutionController:
         with self._lock:
             self._phase = s
             public = self._public_state_locked()
+        self._notify(public, msg)
+
+    def _publish(self, msg: str = ""):
+        """Republica o estado ATUAL sem alterar a fase.
+
+        Usado por `pause()`/`resume()`: escrever a fase de novo poderia
+        movê-la para trás (ex.: COUNTDOWN depois de RUNNING) se a thread
+        tivesse avançado nesse intervalo.
+        """
+        with self._lock:
+            public = self._public_state_locked()
+        self._notify(public, msg)
+
+    def _notify(self, public: ExecState, msg: str):
         if self.on_state:
             try:
                 self.on_state(public)
@@ -256,13 +270,15 @@ class ExecutionController:
             if self._phase not in _ACTIVE_PHASES or self._paused:
                 return False
             self._paused = True
-            phase = self._phase
         self._pause.clear()
         try:
             self.executor.pause_drawing()
         except Exception:
             pass
-        self._set(phase, "Pausado.")
+        # Republica (sem reescrever a fase): se a thread avançou para
+        # RUNNING entre a checagem e aqui, reescrever a fase a faria
+        # voltar para COUNTDOWN.
+        self._publish("Pausado.")
         return True
 
     def resume(self) -> bool:
@@ -271,10 +287,9 @@ class ExecutionController:
             if not self._paused:
                 return False
             self._paused = False
-            phase = self._phase
-        # Publica o estado ANTES de liberar a pausa: liberando primeiro, a
-        # thread pode acordar e publicar RUNNING por cima deste estado.
-        self._set(phase, "Retomado.")
+        # Republica ANTES de liberar a pausa: liberando primeiro, a
+        # thread pode acordar e publicar outro estado por cima deste.
+        self._publish("Retomado.")
         self._pause.set()
         try:
             self.executor.resume_drawing()

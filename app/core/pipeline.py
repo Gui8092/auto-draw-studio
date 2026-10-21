@@ -86,6 +86,10 @@ def build_plan(
     strat = getattr(s, "strategy", "auto")
     if strat not in STRATEGIES:
         strat = "auto"
+    if strat == "sombreado":
+        # O sombreamento precisa dos tons (cinza) — só
+        # `build_shaded_plan` sabe fazer. Sem os tons, cai no "auto".
+        strat = "auto"
     plan = DrawingPlan(strokes=[], image_width=w, image_height=h,
                        spacing_px=float(max(1, s.fill_spacing)))
     ink = (np.asarray(mask) > 127).astype(np.uint8)
@@ -166,6 +170,123 @@ def _add_contours(plan: DrawingPlan, mask: np.ndarray, s: ProcessingSettings,
             plan.strokes.append(Stroke(points=poly, kind=kind))
 
 
+def build_shaded_plan(
+    mask: np.ndarray,
+    gray: np.ndarray,
+    settings: ProcessingSettings | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> DrawingPlan:
+    """Plano com hachuras nas regiões de tom médio (modo "sombreado").
+
+    - Traços finos → linha central (como no modo "auto").
+    - Regiões escuras (tom médio da região < `hatch_threshold`) →
+      preenchimento sólido por zigue-zague.
+    - Regiões de tom médio → hachuras paralelas, com espaçamento
+      proporcional à claridade (tom claro = hachura mais rala).
+
+    É o que faz uma foto/ilustração virar um desenho a lápis: as áreas
+    escuras ficam chapadas e as médias ganham textura.
+    """
+    from app.core.shading_planner import hatch_spacing_for, plan_hatch
+
+    s = settings or ProcessingSettings()
+    h, w = mask.shape[:2]
+    plan = DrawingPlan(strokes=[], image_width=w, image_height=h,
+                       spacing_px=float(max(1, s.fill_spacing)))
+    ink = (np.asarray(mask) > 127).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
+    _check_cancel(cancel_check)
+
+    thin_px = max(2.0, float(getattr(s, "thin_line_px", 4.0)))
+    decision = classify_components(mask, thin_px=thin_px,
+                                   min_area=float(s.min_detail_area),
+                                   cancel_check=cancel_check)
+    plan.strategy_notes = decision.explain()
+    thin_labels = set(decision.thin_labels)
+
+    # Tom médio de cada componente (bincount: O(1) por componente).
+    gray_f = np.asarray(gray, dtype=np.float32)
+    if gray_f.shape != ink.shape:
+        gray_f = np.zeros(ink.shape, np.float32)
+    sums = np.bincount(labels.ravel(), weights=gray_f.ravel(), minlength=n)
+    counts = np.bincount(labels.ravel(), minlength=n)
+    means = np.zeros(n, np.float32)
+    np.divide(sums, np.maximum(counts, 1), out=means, where=counts > 0)
+
+    solid_thr = float(getattr(s, "hatch_threshold", 120.0))
+    hatch_labels: set[int] = set()
+    for i in range(1, n):
+        if i in thin_labels:
+            continue
+        if float(stats[i, cv2.CC_STAT_AREA]) < float(s.min_detail_area):
+            continue  # detalhe pequeno: só contorno
+        if float(means[i]) >= solid_thr:
+            hatch_labels.add(i)
+
+    # 1) Linhas centrais dos componentes finos.
+    if thin_labels:
+        thin_m = np.where(np.isin(labels, list(thin_labels)), 255, 0).astype(np.uint8)
+        for chain in plan_centerlines(thin_m, cancel_check=cancel_check):
+            plan.strokes.append(Stroke(points=chain, kind=StrokeType.CENTERLINE))
+
+    # 2) Preenchimento sólido das regiões escuras (as hachuradas viram
+    #    "buracos" e ficam de fora).
+    exclude = set(thin_labels) | hatch_labels
+    fill_m = np.asarray(mask)
+    if exclude:
+        fill_m = np.where(np.isin(labels, list(exclude)), 0, fill_m).astype(np.uint8)
+    for poly in plan_fill_zigzag(fill_m, spacing=max(1, int(s.fill_spacing)),
+                                 margin=1, cancel_check=cancel_check):
+        plan.strokes.append(Stroke(points=poly, kind=StrokeType.FILL))
+
+    # 3) Hachuras das regiões de tom médio.
+    angle = float(getattr(s, "hatch_angle", 45.0))
+    intensity = float(getattr(s, "shading_intensity", 0.5))
+    base_sp = int(getattr(s, "hatch_spacing", 6))
+    for i in sorted(hatch_labels):
+        _check_cancel(cancel_check)
+        # Trabalha só sobre a caixa do componente: `np.where(labels==i)`
+        # e a varredura da grade de hachura varram a imagem INTEIRA
+        # (o sombreado ficava ~10x mais lento que o modo "auto").
+        lx = int(stats[i, cv2.CC_STAT_LEFT])
+        ly = int(stats[i, cv2.CC_STAT_TOP])
+        lw = int(stats[i, cv2.CC_STAT_WIDTH])
+        lh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        x0, x1 = max(0, lx), min(w, lx + lw)
+        y0, y1 = max(0, ly), min(h, ly + lh)
+        sub_labels = labels[y0:y1, x0:x1]
+        comp = np.where(sub_labels == i, 255, 0).astype(np.uint8)
+        tone = float(means[i])
+        spacing = hatch_spacing_for(tone, base_sp, intensity)
+        # Hachura onde o pixel é mais escuro que o tom da região (as
+        # sombras internas). A margem garante que uma região de tom
+        # UNIFORME também receba hachura (sem ela, `gray < tom` nunca
+        # seria verdade e a região ficaria vazia).
+        thr = int(min(255.0, max(20.0, tone * 1.15 + 3.0)))
+        sub_gray = gray[y0:y1, x0:x1]
+        for poly in plan_hatch(sub_gray, comp, angle_deg=angle,
+                               spacing=spacing, dark_thr=thr,
+                               bbox=(0, 0, x1 - x0, y1 - y0)):
+            if len(poly) >= 2:
+                plan.strokes.append(Stroke(points=[
+                    (p[0] + x0, p[1] + y0) for p in poly],
+                    kind=StrokeType.HATCH))
+
+    # 4) Contornos (externos + buracos) e detalhes.
+    _add_contours(plan, mask, s, thin_labels=thin_labels, labels=labels)
+
+    if not any(st.kind == StrokeType.HATCH for st in plan.strokes):
+        plan.strategy_notes.append(
+            "Sombreado: nenhuma hachura foi gerada. As hachuras cobrem os "
+            "tons MÉDIOS — aumente o limiar (≈180) para incluí-los.")
+
+    _check_cancel(cancel_check)
+    simplify_plan(plan, float(s.simplify_epsilon))
+    _check_cancel(cancel_check)
+    order_plan(plan)
+    return plan
+
+
 def process_to_plan(
     gray: np.ndarray,
     settings: ProcessingSettings,
@@ -190,5 +311,11 @@ def process_to_plan(
     _check_cancel(cancel_check)
     mask = apply_morphology(mask, settings.morph_op, settings.morph_kernel)
     _check_cancel(cancel_check)
-    plan = build_plan(mask, settings, cancel_check=cancel_check)
+    if getattr(settings, "strategy", "auto") == "sombreado":
+        # O sombreamento usa os tons JÁ AJUSTADOS (brilho/contraste/gama):
+        # a máscara saiu deles, e decidir "hachura ou preenchimento" com
+        # o cinza ORIGINAL media o tom errado.
+        plan = build_shaded_plan(mask, adj, settings, cancel_check=cancel_check)
+    else:
+        plan = build_plan(mask, settings, cancel_check=cancel_check)
     return mask, plan

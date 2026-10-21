@@ -30,6 +30,11 @@ def simplify_polyline(points: list[tuple[float, float]], epsilon: float) -> list
 
 
 def simplify_plan(plan: DrawingPlan, epsilon: float) -> DrawingPlan:
+    # O filtro de traços válidos vem ANTES de qualquer retorno: com
+    # epsilon <= 0 a simplificação é pulada e um traço com menos de 2
+    # pontos sobrevivia — depois `order_plan` acessava `points[-1]` e
+    # levantava IndexError (o slider de Simplificação chega a 0).
+    plan.strokes = [s for s in plan.strokes if len(s.points) >= 2]
     if epsilon <= 0:
         return plan
     # Traços de FILL são chains de scanlines horizontais alternadas.
@@ -147,6 +152,8 @@ def order_plan(plan: DrawingPlan) -> DrawingPlan:
             if rev and len(nxt.points) >= 2:
                 nxt.points = nxt.points[::-1]
             ordered.append(nxt)
+            if not nxt.points:
+                continue
             cur = np.array(nxt.points[-1], dtype=np.float64)
     plan.strokes = ordered
     return plan

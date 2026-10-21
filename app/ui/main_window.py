@@ -1,6 +1,7 @@
 """Janela principal do Auto Draw Studio."""
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -30,9 +31,16 @@ from app.ui.process_worker import ProcessWorker
 from app.ui.settings_panel import SettingsPanel
 from app.ui.styles import DARK_QSS
 from app.utils.logging_setup import setup_logging
-from app.utils.persistence import load_settings, save_settings
+from app.utils.persistence import (load_project, load_settings,
+                                   save_project as save_project_file,
+                                   save_settings)
 
 log = setup_logging()
+
+# Threads de processamento que não puderam ser encerradas a tempo.
+# Mantidas vivas aqui para que o COLLECT do Python não destrua uma
+# QThread em execução (o Qt aborta o processo: 0xC0000409).
+_ORPHAN_THREADS: list = []
 
 
 def clamp_countdown(seconds: int | float) -> int:
@@ -203,6 +211,21 @@ class MainWindow(QMainWindow):
         self.btn_save_cfg = QPushButton("💾 Salvar cfg")
         self.btn_save_cfg.clicked.connect(self.save_cfg)
         hl.addWidget(self.btn_save_cfg)
+        self.btn_open_proj = QPushButton("📂 Abrir")
+        self.btn_open_proj.setToolTip("Abre um projeto salvo (.ads.json): "
+                                      "imagem + ajustes + trajetórias.")
+        self.btn_open_proj.clicked.connect(self.open_project)
+        hl.addWidget(self.btn_open_proj)
+        self.btn_save_proj = QPushButton("📁 Projeto")
+        self.btn_save_proj.setToolTip("Salva o projeto (imagem + ajustes + "
+                                      "trajetórias) em .ads.json.")
+        self.btn_save_proj.clicked.connect(self.save_project)
+        hl.addWidget(self.btn_save_proj)
+        self.btn_export_svg = QPushButton("↗ SVG")
+        self.btn_export_svg.setToolTip("Exporta as trajetórias em SVG "
+                                       "(revisar/editar fora do app).")
+        self.btn_export_svg.clicked.connect(self.export_svg)
+        hl.addWidget(self.btn_export_svg)
         hroot.addLayout(hl)
         steps_row = QHBoxLayout()
         self.step_badges: list = []
@@ -301,6 +324,14 @@ class MainWindow(QMainWindow):
         self.spin_delay.setToolTip("Pausa entre traços (levantar/pressionar o mouse).")
         self.spin_delay.setValue(float(self.settings.execution.stroke_delay_s))
         row2.addWidget(self.spin_delay)
+        row2.addWidget(QLabel("Pincel px:"))
+        self.spin_brush = QSpinBox()
+        self.spin_brush.setRange(0, 30)
+        self.spin_brush.setToolTip("Espessura do pincel do app de destino "
+                                   "(0 = automático). A prévia de simulação "
+                                   "passa a prever o traço real.")
+        self.spin_brush.setValue(int(self.settings.execution.brush_px))
+        row2.addWidget(self.spin_brush)
         exec_lay.addLayout(row2)
 
         self.lbl_stats = QLabel("traços: — · tempo est.: —")
@@ -355,6 +386,7 @@ class MainWindow(QMainWindow):
         ex = self.settings.execution
         self.spin_speed.setValue(int(ex.move_speed_px_s))
         self.spin_delay.setValue(float(ex.stroke_delay_s))
+        self.spin_brush.setValue(int(ex.brush_px))
         # A configuração de PROCESSAMENTO salva também precisa voltar
         # para o painel. Antes, o painel nascia sempre nos padrões e o
         # "Salvar cfg" sobrescrevia o arquivo com os padrões — o
@@ -418,10 +450,11 @@ class MainWindow(QMainWindow):
         self.prev_bw.set_image((mask))
         self.prev_paths.set_plan(plan)
         self.legend.setText(self.prev_paths.legend())
-        # Espessura da simulação acompanha o espaçamento: linhas próximas
-        # com traço fino deixam sulcos; linhas afastadas com traço grosso
-        # cobrem mais. Padrão spacing 4 → espessura 2 (inalterado).
-        sim_thickness = max(1, int(round(plan.spacing_px / 2)))
+        # Espessura da simulação: o pincel do app de destino quando
+        # informado; senão, a heurística (≈ metade do espaçamento:
+        # linhas próximas com traço fino deixam sulcos, linhas afastadas
+        # com traço grosso cobrem mais).
+        sim_thickness = self._effective_brush_px(plan)
         sim = rasterize_plan(plan, thickness=sim_thickness)
         # Simulação: fundo branco + traços pretos
         sim_rgb = np.stack([(255 - sim)] * 3, axis=-1).astype(np.uint8)
@@ -577,12 +610,177 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def restart_hotkeys(self) -> bool:
+        """(Re)registra os atalhos globais conforme a configuração atual.
+
+        O listener do pynput é registrado UMA vez no start do app; abrir
+        um projeto com atalhos diferentes exigia re-registrar (e sem
+        isso a interface mostrava um atalho que não existia).
+        """
+        bindings = {
+            "start": self.settings.execution.hotkey_start,
+            "pause": self.settings.execution.hotkey_pause,
+            "cancel": self.settings.execution.hotkey_cancel,
+        }
+        resume_key = (self.settings.execution.hotkey_resume or "").strip()
+        if resume_key:
+            bindings["resume"] = resume_key
+        return self.hotkeys.start(bindings)
+
     def save_cfg(self):
+        self._collect_settings_from_ui()
+        save_settings(self.settings)
+        self._log("Configurações salvas.")
+
+    def _collect_settings_from_ui(self) -> AppSettings:
+        """Configuração EFETIVA (painel + execução).
+
+        Chamado antes de salvar config OU projeto: sem isso o arquivo
+        guardava os padrões, não o que o usuário viu na tela (o plano
+        do projeto ficava inconsistente com os ajustes gravados).
+        """
         self.settings.processing = self.panel.values()
         self.settings.execution.move_speed_px_s = float(self.spin_speed.value())
         self.settings.execution.stroke_delay_s = float(self.spin_delay.value())
-        save_settings(self.settings)
-        self._log("Configurações salvas.")
+        self.settings.execution.brush_px = int(self.spin_brush.value())
+        return self.settings
+
+    def _effective_brush_px(self, plan: DrawingPlan) -> int:
+        """Espessura usada na prévia de simulação.
+
+        Lê o CONTROLE (e não a config salva): antes, o valor só valia
+        depois de "Salvar cfg" — o controle parecia não funcionar.
+        """
+        brush = int(self.spin_brush.value() or 0)
+        if brush > 0:
+            return max(1, brush)
+        return max(1, int(round(plan.spacing_px / 2)))
+
+    # ---- Projeto / exportação ----
+    def save_project(self):
+        """Salva imagem + ajustes + trajetórias em um arquivo .ads.json."""
+        if self.plan is None or not self.plan.total_strokes:
+            QMessageBox.warning(self, "Nada para salvar",
+                                "Processe uma imagem antes de salvar o projeto.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salvar projeto", "", "Projeto Auto Draw (*.ads.json)")
+        if not path:
+            return
+        try:
+            # Grava os ajustes ATUAIS (não os salvos antes): o projeto
+            # precisa ser internamente consistente (plano + ajustes).
+            self._collect_settings_from_ui()
+            save_project_file(path, self.image_path or "", self.settings,
+                              self.plan.to_dict())
+        except Exception as e:
+            QMessageBox.warning(self, "Erro ao salvar", str(e))
+            self._log(f"⛔ Erro ao salvar projeto: {e}")
+            return
+        self._log(f"Projeto salvo: {Path(path).name}")
+
+    def open_project(self):
+        """Abre um projeto salvo (imagem + ajustes + trajetórias)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir projeto", "", "Projeto Auto Draw (*.ads.json)")
+        if not path:
+            return
+        try:
+            data = load_project(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Erro ao abrir", str(e))
+            self._log(f"⛔ Erro ao abrir projeto: {e}")
+            return
+        # 1) Ajustes do projeto (processamento + execução).
+        try:
+            proj_settings = AppSettings.from_dict(data.get("settings", {}))
+        except Exception:
+            proj_settings = AppSettings()
+        self.settings.processing = proj_settings.processing
+        self.settings.execution = proj_settings.execution
+        try:
+            self._apply_settings_to_ui()
+            self.controller.countdown_seconds = clamp_countdown(
+                self.settings.execution.countdown_s)
+        except Exception as e:
+            self._log(f"Ajustes do projeto parcialmente aplicados: {e}")
+        # Os atalhos globais foram registrados com a configuração
+        # ANTERIOR: re-registra (e persiste) para o projeto atual.
+        try:
+            self.restart_hotkeys()
+            save_settings(self.settings)
+        except Exception as e:
+            self._log(f"⚠ Não foi possível re-registrar os atalhos: {e}")
+        # 2) Imagem original.
+        img_path = data.get("image_path") or ""
+        image_ok = False
+        if img_path and Path(img_path).exists():
+            try:
+                loaded = load_image(img_path,
+                                    max_size=self.panel.values().max_work_size)
+                self.image_path = img_path
+                self.rgb = loaded.rgb
+                self.gray = loaded.gray
+                self.prev_original.set_image(self.rgb)
+                image_ok = True
+                self._log(f"Imagem do projeto: {Path(img_path).name} "
+                          f"({loaded.width}×{loaded.height})")
+            except Exception as e:
+                self._log(f"⚠ Não foi possível carregar a imagem do projeto: {e}")
+        if not image_ok:
+            # Sem a imagem do projeto, a imagem ANTERIOR não pode ficar
+            # na tela: o plano do projeto seria desenhado por cima dela
+            # (e um "Salvar projeto" gravaria a imagem antiga com o
+            # plano novo).
+            self.image_path = None
+            self.gray = None
+            self.rgb = None
+            self.mask = None
+            self.prev_original.set_image(None)
+            self._log("⚠ Imagem do projeto não encontrada — "
+                      "apenas as trajetórias serão carregadas.")
+        # 3) Trajetórias salvas (evita reprocessar e preserva o que foi
+        #    realmente desenhado). Se não baterem com a imagem, reprocessa.
+        restored = False
+        raw_plan = data.get("plan")
+        if isinstance(raw_plan, dict):
+            try:
+                plan = DrawingPlan.from_dict(raw_plan)
+                same_size = (self.gray is not None
+                             and plan.image_width == self.gray.shape[1]
+                             and plan.image_height == self.gray.shape[0])
+                if plan.total_strokes and same_size:
+                    self.plan = plan
+                    self.prev_paths.set_plan(plan)
+                    self.legend.setText(self.prev_paths.legend())
+                    self._log(f"Trajetórias restauradas: {plan.total_strokes}")
+                    restored = True
+                elif plan.total_strokes:
+                    self._log("⚠ Trajetórias do projeto não combinam com a "
+                              "imagem — serão recalculadas.")
+            except Exception as e:
+                self._log(f"⚠ Trajetórias do projeto ilegíveis: {e}")
+        if not restored and self.gray is not None:
+            self.reprocess()
+        self._refresh_ready()
+
+    def export_svg(self):
+        """Exporta as trajetórias em SVG."""
+        if self.plan is None or not self.plan.total_strokes:
+            QMessageBox.warning(self, "Nada para exportar",
+                                "Processe uma imagem antes de exportar.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportar SVG", "", "SVG (*.svg);;Todos (*)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.plan.to_svg(), encoding="utf-8")
+        except Exception as e:
+            QMessageBox.warning(self, "Erro ao exportar", str(e))
+            self._log(f"⛔ Erro ao exportar SVG: {e}")
+            return
+        self._log(f"SVG exportado: {Path(path).name}")
 
     # ---- Slots de execução ----
     def _on_state(self, s: str):
@@ -648,8 +846,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         if self._in_close:
             # Reentrância: o loop de espera processa eventos Qt; um
-            # segundo closeEvent não pode reentrar.
-            super().closeEvent(e)
+            # segundo closeEvent não pode reentrar (aceitar aqui
+            # destruiria a janela com as threads vivas).
+            e.ignore()
             return
         self._in_close = True
         try:
@@ -678,14 +877,15 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
                 self._proc_thread.wait(50)
             if self._proc_thread.isRunning():
-                # NÃO destrói uma thread em execução (abort do processo) e
-                # NÃO usa terminate(). Desacopla do pai para que o
-                # encerramento da janela não a derrube; ela morre com o
-                # processo.
+                # NÃO destrói uma thread em execução (abort do processo
+                # 0xC0000409) e NÃO usa terminate(). Desacopla do pai e
+                # guarda a referência num módulo vivo: se o objeto fosse
+                # coletado, o Python destruiria a QThread em execução.
                 self._log0("Processamento não encerrou em 30s: thread "
                            "desacoplada (encerra com o processo).")
                 try:
                     self._proc_thread.setParent(None)
+                    _ORPHAN_THREADS.append(self._proc_thread)
                 except Exception:
                     pass
         except Exception:
@@ -718,15 +918,7 @@ def run_app(argv) -> int:
     # retomar pelo teclado e, com a janela minimizada para desenhar, a
     # pausa virava uma via sem volta.
     try:
-        bindings = {
-            "start": w.settings.execution.hotkey_start,
-            "pause": w.settings.execution.hotkey_pause,
-            "cancel": w.settings.execution.hotkey_cancel,
-        }
-        resume_key = (w.settings.execution.hotkey_resume or "").strip()
-        if resume_key:
-            bindings["resume"] = resume_key
-        if not w.hotkeys.start(bindings):
+        if not w.restart_hotkeys():
             # Antes o resultado era ignorado e os botões continuavam
             # anunciando F9/F10/Esc que nunca funcionariam.
             w._log("⚠ Atalhos globais indisponíveis (pynput ausente ou "
@@ -739,4 +931,23 @@ def run_app(argv) -> int:
         app.aboutToQuit.connect(w.hotkeys.stop)
     except Exception:
         pass
-    return app.exec()
+    code = app.exec()
+    if any(t.isRunning() for t in _ORPHAN_THREADS):
+        # Uma thread de processamento ficou viva: sair SEM o teardown do
+        # interpretador. Destruir uma QThread em execução aborta o
+        # processo (0xC0000409).
+        import os
+        import sys
+
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for h in list(logging.getLogger().handlers):
+                try:
+                    h.flush()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        os._exit(code)
+    return code
