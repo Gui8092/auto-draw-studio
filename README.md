@@ -93,9 +93,6 @@ Nenhum teste move o mouse real (backend mock). O `baseline_quality.json`
 trava as métricas de qualidade por caso: se um ajuste de algoritmo piorar o
 desenho (cobertura, furos, deslocamento), o teste falha.
 
-> Os testes são **locais** (o `.gitignore` do projeto mantém `tests/` fora do
-> repositório).
-
 ## Atalhos
 
 | Ação | Padrão |

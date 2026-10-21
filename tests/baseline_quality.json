@@ -1,0 +1,248 @@
+{
+  "auto:10_regioes": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 4,
+      "outer_contour": 4
+    },
+    "oob": 0,
+    "pen_up": 429.0,
+    "strokes": 8
+  },
+  "auto:11_tonal": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 2,
+      "inner_contour": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 132.2,
+    "strokes": 4
+  },
+  "auto:1_quadrado": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 169.0,
+    "strokes": 2
+  },
+  "auto:2_circulo": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 138.4,
+    "strokes": 2
+  },
+  "auto:3_anel": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 3,
+      "inner_contour": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 132.3,
+    "strokes": 5
+  },
+  "auto:4_triangulo": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 3,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 453.1,
+    "strokes": 4
+  },
+  "auto:5_logo": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 3,
+      "outer_contour": 3
+    },
+    "oob": 0,
+    "pen_up": 529.2,
+    "strokes": 6
+  },
+  "auto:6_lineart": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "centerline": 6,
+      "inner_contour": 2
+    },
+    "oob": 0,
+    "pen_up": 387.5,
+    "strokes": 8
+  },
+  "auto:7_diagonais": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "centerline": 5
+    },
+    "oob": 0,
+    "pen_up": 120.0,
+    "strokes": 5
+  },
+  "auto:8_texto": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 12,
+      "inner_contour": 5,
+      "outer_contour": 4
+    },
+    "oob": 0,
+    "pen_up": 820.5,
+    "strokes": 21
+  },
+  "auto:9_ruido": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 117.2,
+    "strokes": 2
+  },
+  "sombreado:10_regioes": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 4,
+      "outer_contour": 4
+    },
+    "oob": 0,
+    "pen_up": 429.0,
+    "strokes": 8
+  },
+  "sombreado:11_tonal": {
+    "coverage": 0.6043,
+    "holes_preserved": true,
+    "kinds": {
+      "hatch": 22,
+      "inner_contour": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 445.7,
+    "strokes": 24
+  },
+  "sombreado:1_quadrado": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 169.0,
+    "strokes": 2
+  },
+  "sombreado:2_circulo": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 138.4,
+    "strokes": 2
+  },
+  "sombreado:3_anel": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 3,
+      "inner_contour": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 132.3,
+    "strokes": 5
+  },
+  "sombreado:4_triangulo": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 3,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 453.1,
+    "strokes": 4
+  },
+  "sombreado:5_logo": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 3,
+      "outer_contour": 3
+    },
+    "oob": 0,
+    "pen_up": 529.2,
+    "strokes": 6
+  },
+  "sombreado:6_lineart": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "centerline": 6,
+      "inner_contour": 2
+    },
+    "oob": 0,
+    "pen_up": 387.5,
+    "strokes": 8
+  },
+  "sombreado:7_diagonais": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "centerline": 5
+    },
+    "oob": 0,
+    "pen_up": 120.0,
+    "strokes": 5
+  },
+  "sombreado:8_texto": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 12,
+      "inner_contour": 5,
+      "outer_contour": 4
+    },
+    "oob": 0,
+    "pen_up": 820.5,
+    "strokes": 21
+  },
+  "sombreado:9_ruido": {
+    "coverage": 1.0,
+    "holes_preserved": true,
+    "kinds": {
+      "fill": 1,
+      "outer_contour": 1
+    },
+    "oob": 0,
+    "pen_up": 117.2,
+    "strokes": 2
+  }
+}

@@ -33,7 +33,7 @@ main.py → app/ui/main_window.py           # UI + orquestração
 ## Testes
 - 206 testes, `QT_QPA_PLATFORM=offscreen`, fixtures em `conftest.py` (`qapp`, `make_window`)
 - **Não roda** sem `QT_QPA_PLATFORM` (precisa display)
-- `tests/` é **local** (fora do git, por convenção do `.gitignore`)
+- `tests/` é versionado: a suíte é a rede de segurança contra regressão
 - `tests/baseline_quality.json`: trava as métricas por caso. Regenerar com
   `$env:UPDATE_QUALITY_BASELINE='1'` — só depois de uma mudança intencional
 

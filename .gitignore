@@ -9,7 +9,8 @@ build/
 logs/
 *.log
 # --- só local, não vai para o GitHub ---
-tests/
 benchmarks/out/
 settings.json
 prompt_projeto.md
+# tests/ é versionado de propósito: a suíte (206 testes + baseline de
+# qualidade) é a rede de segurança contra regressão de algoritmo.
